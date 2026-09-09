@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.18.1/www/static/schema.json
+
+version: 2
+project_name: karta
+
+builds:
+  - id: karta
+    dir: cli
+    main: .
+    binary: karta
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -X github.com/dsx-ai-factory/workload-map/pkg/version.version={{ .Env.VERSION }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: karta-operator
+    dir: operator
+    main: ./cmd
+    binary: karta-operator
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+      - GOFIPS140=v1.0.0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -X github.com/dsx-ai-factory/workload-map/pkg/version.version={{ .Env.VERSION }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: karta
+    ids:
+      - karta
+    formats:
+      - tar.gz
+    name_template: "karta_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    strip_binary_directory: true
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+      - THIRD_PARTY_LICENSES
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+  ids:
+    - karta
+
+source:
+  enabled: false
+
+sboms:
+  - disable: true
+
+dockers_v2:
+  - id: karta-operator
+    ids:
+      - karta-operator
+    dockerfile: operator/Dockerfile
+    images:
+      - "{{ .Env.KARTA_OPERATOR_IMAGE_REPOSITORY }}"
+    tags:
+      - "{{ .Env.KARTA_OPERATOR_IMAGE_TAG }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    sbom: false
+    flags:
+      - --provenance=false
+
+homebrew_casks:
+  - name: karta
+    ids:
+      - karta
+    binaries:
+      - karta
+    url:
+      template: https://github.com/run-ai/karta/releases/download/v{{ .Version }}/{{ .ArtifactName }}
+    repository:
+      owner: run-ai
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/run-ai/karta
+    description: Workload-aware visibility for any Kubernetes workload type
+
+release:
+  github:
+    owner: run-ai
+    name: karta
+  ids:
+    - karta
+  replace_existing_artifacts: true
+  include_meta: false
+  preflight:
+    fail_on_error: true
+
+snapshot:
+  version_template: "{{ .Env.VERSION }}"
+
+changelog:
+  sort: asc

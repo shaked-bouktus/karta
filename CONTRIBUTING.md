@@ -182,14 +182,13 @@ This is the same model used by [ai-dynamo/grove](https://github.com/ai-dynamo/gr
 
 ### Releasing
 
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-```
+The root library, CLI module, and operator module use one synchronized version.
+The preparation, two-tag convention, local snapshot, guarded release command,
+credentials, and recovery procedure are documented in
+[RELEASE.md](RELEASE.md).
 
-Pushing the tag triggers `push-artifacts.yaml`, which publishes `oci://ghcr.io/dsx-ai-factory/workload-map/karta:1.2.3` with both `version` and `appVersion` set to `1.2.3`, and creates a corresponding GitHub release.
-
-No `Chart.yaml` bump is needed - the tag is the source of truth for versions. The one pre-tag step is adding the version's entry to [CHANGELOG.md](CHANGELOG.md); see [RELEASE.md](RELEASE.md) for the policy.
+No `Chart.yaml` bump is needed. The release tag remains the source of truth for
+the published chart version and app version.
 
 ## Code of Conduct
 
