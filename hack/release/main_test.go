@@ -110,6 +110,19 @@ var _ = Describe("Release validation", func() {
 		})
 	})
 
+	It("resolves GoReleaser artifact paths from the project root", func() {
+		root := GinkgoT().TempDir()
+		dist := filepath.Join(root, "dist")
+		Expect(os.MkdirAll(dist, 0o755)).To(Succeed())
+		contents := `[{"name":"karta","path":"dist/karta_linux_amd64/karta","type":"Binary"}]`
+		Expect(os.WriteFile(filepath.Join(dist, "artifacts.json"), []byte(contents), 0o644)).To(Succeed())
+
+		artifacts, err := readArtifacts(dist)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(artifacts).To(HaveLen(1))
+		Expect(artifacts[0].Path).To(Equal(filepath.Join(dist, "karta_linux_amd64", "karta")))
+	})
+
 	Describe("artifact contents", func() {
 		It("accepts the exact CLI archive surface", func() {
 			path := filepath.Join(GinkgoT().TempDir(), "karta.tar.gz")

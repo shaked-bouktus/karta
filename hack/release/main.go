@@ -186,13 +186,23 @@ func runOperatorPlatforms(args []string) error {
 }
 
 func readArtifacts(dist string) ([]artifact, error) {
-	contents, err := os.ReadFile(filepath.Join(dist, "artifacts.json"))
+	absoluteDist, err := filepath.Abs(dist)
+	if err != nil {
+		return nil, err
+	}
+	contents, err := os.ReadFile(filepath.Join(absoluteDist, "artifacts.json"))
 	if err != nil {
 		return nil, err
 	}
 	var artifacts []artifact
 	if err := json.Unmarshal(contents, &artifacts); err != nil {
 		return nil, fmt.Errorf("decode artifacts.json: %w", err)
+	}
+	projectRoot := filepath.Dir(absoluteDist)
+	for i := range artifacts {
+		if artifacts[i].Path != "" && !filepath.IsAbs(artifacts[i].Path) {
+			artifacts[i].Path = filepath.Join(projectRoot, filepath.FromSlash(artifacts[i].Path))
+		}
 	}
 	return artifacts, nil
 }
