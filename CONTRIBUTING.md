@@ -97,24 +97,38 @@ make helm-lint
 make helm-validate
 ```
 
-`make check` is the complete Go presubmit for the library, the CLI and the
-operator, and CI runs it verbatim. CI covers the Helm chart, the air-gap image
-lock and the shell scripts in separate steps, so run those four targets too
-before pushing if you touched them.
+`make check` is the complete Go presubmit for the library, the CLI, the
+operator, and the release helper, and CI runs it verbatim. CI covers the Helm
+chart, the air-gap image lock, and the shell scripts in separate steps, so run
+those four targets too before pushing if you touched them.
 
 There is one Makefile, at the repository root. Bare targets act on every
 component, and a component suffix narrows them:
 
 ```bash
-make test              # library, CLI and operator
+make test              # library, CLI, operator and release helper
 make test-cli          # just the CLI
 make check-operator    # just the operator, the full fmt/vet/lint/test set
 make help              # every target, grouped
 ```
 
+`make build-operator` always writes a Linux binary to `bin/karta-operator`,
+including on macOS. The operator version smoke test runs on Linux CI and reports
+that it was not run when a local host cannot execute the Linux binary.
+
+The root Go workspace contains the library, CLI, and operator modules. The
+separate internal release helper and other nested modules are deliberately
+isolated from that shared workspace. When running a Go command directly inside
+`hack/release`, `wasm-engine`, `test/e2e`, `hack/imagelock`, or `docs/examples`,
+set `GOWORK=off`. Make targets already set it where required.
+
+Release-helper Make targets also use `GOWORK=off`. This makes the tested helper
+and the publication guard use the dependency versions pinned in
+`hack/release/go.mod` rather than workspace-wide version selection.
+
 `make lint` never rewrites your files. `make fmt` and the per-component
-`fmt-lib`, `fmt-cli` and `fmt-operator` targets are the only ones that reformat,
-and nothing depends on them.
+`fmt-lib`, `fmt-cli`, `fmt-operator`, and `fmt-release-helper` targets are the
+only ones that reformat, and nothing depends on them.
 
 ### Commit Messages
 
@@ -182,14 +196,13 @@ This is the same model used by [ai-dynamo/grove](https://github.com/ai-dynamo/gr
 
 ### Releasing
 
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-```
+Karta's root library, CLI module, and operator module use one synchronized
+version. The preparation, three-tag convention, local snapshot, guarded release
+command, credentials, and recovery procedure are documented in
+[RELEASE.md](RELEASE.md).
 
-Pushing the tag triggers `push-artifacts.yaml`, which publishes `oci://ghcr.io/run-ai/karta/karta:1.2.3` with both `version` and `appVersion` set to `1.2.3`, and creates a corresponding GitHub release.
-
-No `Chart.yaml` bump is needed - the tag is the source of truth for versions. The one pre-tag step is adding the version's entry to [CHANGELOG.md](CHANGELOG.md); see [RELEASE.md](RELEASE.md) for the policy.
+No `Chart.yaml` bump is needed. The release tag remains the source of truth for
+the published chart version and app version.
 
 ## Code of Conduct
 

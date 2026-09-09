@@ -8,14 +8,12 @@ LOCALBIN ?= $(PROJECT_DIR)/bin
 
 # Version stamping. CI overrides VERSION with the scheme in push-artifacts.yaml
 # (tag v1.2.3 -> 1.2.3, main -> 0.0.0-main-<sha>).
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-main")
-
-VERSION_PKG := github.com/run-ai/karta/pkg/version
-GO_LDFLAGS  := -X $(VERSION_PKG).version=$(VERSION)
-LDFLAGS     := -ldflags "$(GO_LDFLAGS)"
+VERSION ?= $(shell git describe --tags --always --dirty --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || echo "0.0.0-main")
+# Freeze the fallback once so exported image variables do not rerun it per recipe.
+VERSION := $(VERSION)
 
 # The component inventory every aggregate fans out over.
-PRIMARY_COMPONENTS := lib cli operator
+COMPONENTS := lib cli operator release-helper
 
 KARTA_CHART_DIR := $(PROJECT_DIR)/charts/karta
 KARTA_CRDS_DIR := $(KARTA_CHART_DIR)/crds
@@ -28,6 +26,7 @@ GOLANGCI_LINT_VERSION       ?= v2.12.2
 CONTROLLER_TOOLS_VERSION    ?= v0.16.5
 GO_LICENCE_DETECTOR_VERSION ?= v0.10.0
 ENVTEST_VERSION             ?= release-0.23
+GORELEASER_VERSION          ?= v2.18.1
 # Kubernetes control-plane (apiserver, etcd, kubectl) version envtest downloads.
 ENVTEST_K8S_VERSION         ?= 1.31.0
 
@@ -39,50 +38,55 @@ CONTROLLER_GEN      ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
 GOLANGCI_LINT       ?= $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 GO_LICENCE_DETECTOR ?= $(LOCALBIN)/go-licence-detector-$(GO_LICENCE_DETECTOR_VERSION)
 ENVTEST             ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
+GORELEASER          ?= $(LOCALBIN)/goreleaser-$(GORELEASER_VERSION)
 
 GOLANGCI_LINT_FLAGS ?= $(if $(VERBOSE),-v)
 
 # Container image settings (defaults for ghcr.io/run-ai/karta OSS publishing).
+# These are the single source for both Make image targets and GoReleaser.
 # Override any component from the command line, e.g.:
 #   make operator-image IMAGE_TAG=v1.2.3
 #   make operator-image IMAGE_REGISTRY=ghcr.io/myorg/karta
 IMAGE_REGISTRY ?= ghcr.io/run-ai/karta
 IMAGE_NAME     ?= karta-operator
 IMAGE_TAG      ?= $(VERSION)
-IMAGE          ?= $(IMAGE_REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
+IMAGE_REPOSITORY ?= $(IMAGE_REGISTRY)/$(IMAGE_NAME)
+
+export KARTA_OPERATOR_IMAGE_REPOSITORY = $(IMAGE_REPOSITORY)
+export KARTA_OPERATOR_IMAGE_TAG = $(IMAGE_TAG)
 
 CONTAINER_TOOL ?= docker
 BUILD_ARGS     ?=
-
-# Architectures for build-operator-all and operator-image-buildx-push.
-PLATFORMS ?= linux/amd64 linux/arm64
-
-empty :=
-space := $(empty) $(empty)
-comma := ,
-PLATFORMS_CSV = $(subst $(space),$(comma),$(PLATFORMS))
+DIST_DIR       ?= $(PROJECT_DIR)/dist
+OPERATOR_IMAGE_CONTEXT ?= $(DIST_DIR)/operator-image
+RELEASE_HELPER_DIR := $(PROJECT_DIR)/hack/release
 
 .DEFAULT_GOAL := help
+
+# GoReleaser --clean owns the shared dist directory. Target-scoped .NOTPARALLEL
+# prerequisites require GNU Make 4.4, while macOS ships 3.81. Keep the marker
+# global so direct parallel CLI and operator build requests are safe as well.
+.NOTPARALLEL:
 
 ##@ Aggregates
 
 .PHONY: fmt
-fmt: $(addprefix fmt-,$(PRIMARY_COMPONENTS)) ## Format every component (rewrites files)
+fmt: $(addprefix fmt-,$(COMPONENTS)) ## Format every checked Go module (rewrites files)
 
 .PHONY: fmt-check
-fmt-check: $(addprefix fmt-check-,$(PRIMARY_COMPONENTS)) ## Check formatting without modifying files
+fmt-check: $(addprefix fmt-check-,$(COMPONENTS)) ## Check formatting without modifying files
 
 .PHONY: vet
-vet: $(addprefix vet-,$(PRIMARY_COMPONENTS)) ## go vet every component
+vet: $(addprefix vet-,$(COMPONENTS)) ## go vet every component
 
 .PHONY: lint
-lint: $(addprefix lint-,$(PRIMARY_COMPONENTS)) ## Lint every component (read-only, never rewrites files)
+lint: $(addprefix lint-,$(COMPONENTS)) ## Lint every component (read-only, never rewrites files)
 
 .PHONY: test
-test: $(addprefix test-,$(PRIMARY_COMPONENTS)) ## Test every component
+test: $(addprefix test-,$(COMPONENTS)) ## Test every component
 
 .PHONY: check
-check: $(addprefix check-,$(PRIMARY_COMPONENTS)) ## Everything CI runs for Go. Run this before pushing
+check: $(addprefix check-,$(COMPONENTS)) ## Everything CI runs for Go. Run this before pushing
 
 .PHONY: build
 build: build-cli build-operator ## Build every binary into bin/ (the library has no artifact)
@@ -111,10 +115,44 @@ lint-lib: golangci-lint ## Lint the library module (set VERBOSE=1 for -v)
 .PHONY: test-lib
 test-lib: lib-generate-mocks ## Run the library tests, plus the offline e2e recorder tests
 	go test ./...
-	cd test/e2e && go test ./recorder/...
+	cd test/e2e && GOWORK=off go test ./recorder/...
 
 .PHONY: check-lib
 check-lib: fmt-check-lib vet-lib lint-lib validate verify-recordings test-lib test-replay ## Full library presubmit
+
+##@ Release helper (nested module)
+
+.PHONY: fmt-release-helper
+fmt-release-helper: ## Format the release helper module
+	cd hack/release && GOWORK=off go fmt ./...
+
+.PHONY: fmt-check-release-helper
+fmt-check-release-helper: ## Check release helper formatting without modifying files
+	@set -e; \
+	cd hack/release; \
+	dirs="$$(GOWORK=off go list -f '{{.Dir}}' ./...)"; \
+	unformatted="$$(gofmt -l $$dirs)"; \
+	test -z "$$unformatted" || { echo "go fmt required:"; echo "$$unformatted"; exit 1; }
+
+.PHONY: vet-release-helper
+vet-release-helper: ## go vet the release helper module
+	cd hack/release && GOWORK=off go vet ./...
+
+.PHONY: lint-release-helper
+lint-release-helper: golangci-lint ## Lint the release helper module
+	cd hack/release && GOWORK=off $(GOLANGCI_LINT) run $(GOLANGCI_LINT_FLAGS) -c $(PROJECT_DIR)/.golangci.yml
+
+.PHONY: test-release-helper
+test-release-helper: ## Test the release helper module
+	cd hack/release && GOWORK=off go test ./...
+
+.PHONY: modules-check-release-helper
+modules-check-release-helper: ## Verify release helper module metadata is tidy and complete
+	cd $(RELEASE_HELPER_DIR) && GOWORK=off go mod tidy -diff
+	cd $(RELEASE_HELPER_DIR) && GOWORK=off go mod verify
+
+.PHONY: check-release-helper
+check-release-helper: fmt-check-release-helper vet-release-helper lint-release-helper modules-check-release-helper test-release-helper ## Full release helper presubmit
 
 ##@ CLI
 
@@ -143,8 +181,8 @@ test-cli: ## Run the CLI unit tests
 	cd cli && go test ./...
 
 .PHONY: build-cli
-build-cli: $(LOCALBIN) ## Build the karta CLI binary into bin/
-	cd cli && go build -trimpath $(LDFLAGS) -o $(LOCALBIN)/karta .
+build-cli: goreleaser $(LOCALBIN) ## Build the karta CLI binary into bin/
+	VERSION=$(VERSION) $(GORELEASER) build --snapshot --clean --single-target --id karta --output $(LOCALBIN)/karta
 
 .PHONY: cli-verify-version
 cli-verify-version: build-cli ## Assert the CLI binary reports the stamped version
@@ -192,57 +230,132 @@ test-operator-integration: envtest ## Run the operator envtest suite (downloads 
 test-operator: test-operator-unit test-operator-integration ## Run the operator unit and envtest suites
 
 .PHONY: check-operator
-check-operator: fmt-check-operator vet-operator lint-operator test-operator ## Full operator presubmit
+check-operator: fmt-check-operator vet-operator lint-operator test-operator operator-version-smoke ## Full operator presubmit
 
 .PHONY: build-operator
-build-operator: $(LOCALBIN) ## Build the karta-operator binary for the host OS/arch
-	cd operator && go build -trimpath $(LDFLAGS) -o $(LOCALBIN)/karta-operator ./cmd
+build-operator: goreleaser $(LOCALBIN) ## Build a Linux karta-operator binary for the host architecture; it is not runnable on macOS
+	GOOS=linux GOARCH=$(shell go env GOARCH) VERSION=$(VERSION) $(GORELEASER) build --snapshot --clean --single-target --id karta-operator --output $(LOCALBIN)/karta-operator
+
+.PHONY: operator-version-smoke
+operator-version-smoke: build-operator ## Run the operator version smoke test on Linux; report unsupported on other hosts
+	@set -e; \
+	if [ "$$(go env GOOS)" != "linux" ]; then \
+		echo "operator version smoke test not run: bin/karta-operator is Linux-only and the host is $$(go env GOOS)"; \
+		exit 0; \
+	fi; \
+	out="$$($(LOCALBIN)/karta-operator --version)"; \
+	echo "$$out"; \
+	[ "$$out" = "$(VERSION)" ] || { \
+		echo "version mismatch: got '$$out', want '$(VERSION)'" >&2; exit 1; }
 
 .PHONY: build-operator-linux-amd64
-build-operator-linux-amd64: $(LOCALBIN) ## Cross-compile the operator for linux/amd64
-	cd operator && GOOS=linux GOARCH=amd64 go build -trimpath $(LDFLAGS) -o $(LOCALBIN)/karta-operator-amd64 ./cmd
+build-operator-linux-amd64: goreleaser $(LOCALBIN) ## Cross-compile the operator for linux/amd64
+	GOOS=linux GOARCH=amd64 VERSION=$(VERSION) $(GORELEASER) build --snapshot --clean --single-target --id karta-operator --output $(LOCALBIN)/karta-operator-amd64
 
 .PHONY: build-operator-linux-arm64
-build-operator-linux-arm64: $(LOCALBIN) ## Cross-compile the operator for linux/arm64
-	cd operator && GOOS=linux GOARCH=arm64 go build -trimpath $(LDFLAGS) -o $(LOCALBIN)/karta-operator-arm64 ./cmd
+build-operator-linux-arm64: goreleaser $(LOCALBIN) ## Cross-compile the operator for linux/arm64
+	GOOS=linux GOARCH=arm64 VERSION=$(VERSION) $(GORELEASER) build --snapshot --clean --single-target --id karta-operator --output $(LOCALBIN)/karta-operator-arm64
 
 .PHONY: build-operator-all
-build-operator-all: build-operator-linux-amd64 build-operator-linux-arm64 ## Cross-compile the operator for all supported platforms
+build-operator-all: goreleaser ## Cross-compile the operator for every release platform
+	VERSION=$(VERSION) $(GORELEASER) build --snapshot --clean --id karta-operator
 
-# The image targets pass GO_LDFLAGS in, so the symbol path lives only here.
-# The build context is the repository root, because the replace directive in
-# operator/go.mod resolves against the local pkg/ tree.
+.PHONY: operator-image-context
+operator-image-context: build-operator-all ## Stage GoReleaser operator binaries as a packaging-only image context
+	cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . stage-operator --dist $(DIST_DIR) --out $(OPERATOR_IMAGE_CONTEXT)
+
+.PHONY: operator-image-context-host
+operator-image-context-host: build-operator ## Stage the host-architecture GoReleaser operator binary
+	@set -e; \
+	arch="$$(go env GOARCH)"; \
+	destination="$(OPERATOR_IMAGE_CONTEXT)/linux/$$arch/karta-operator"; \
+	mkdir -p "$$(dirname "$$destination")"; \
+	cp "$(LOCALBIN)/karta-operator" "$$destination"
 
 .PHONY: operator-image
-operator-image: ## Build the operator image for the host arch
+operator-image: operator-image-context-host ## Build the operator image for the host arch
 	$(CONTAINER_TOOL) build $(BUILD_ARGS) \
-		--build-arg TARGETARCH=$(shell go env GOARCH) \
-		--build-arg GO_LDFLAGS="$(GO_LDFLAGS)" \
-		--tag $(IMAGE) \
-		-f operator/Dockerfile \
-		.
+		--platform linux/$(shell go env GOARCH) \
+		--tag $(IMAGE_REPOSITORY):$(IMAGE_TAG) \
+		-f $(PROJECT_DIR)/operator/Dockerfile \
+		$(OPERATOR_IMAGE_CONTEXT)
 
 .PHONY: operator-image-push
 operator-image-push: ## Push the operator image
-	$(CONTAINER_TOOL) push $(IMAGE)
+	$(CONTAINER_TOOL) push $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 
 .PHONY: operator-image-buildx-push
-operator-image-buildx-push: ## Build and push a multi-arch operator image with an SBOM attestation via BuildKit (requires Docker)
+operator-image-buildx-push: operator-image-context ## Build and push a multi-arch operator image via BuildKit (requires Docker)
 	@[ "$(CONTAINER_TOOL)" = "docker" ] || { echo "Error: operator-image-buildx-push requires CONTAINER_TOOL=docker (got '$(CONTAINER_TOOL)')" >&2; exit 1; }
+	@set -e; platforms="$$(cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . operator-platforms --dist $(DIST_DIR))"; \
 	$(CONTAINER_TOOL) buildx build $(BUILD_ARGS) \
-		--platform $(PLATFORMS_CSV) \
-		--build-arg GO_LDFLAGS="$(GO_LDFLAGS)" \
-		--tag $(IMAGE) \
-		--attest type=sbom \
-		-f operator/Dockerfile \
+		--platform "$$platforms" \
+		--provenance=false --sbom=false \
+		--tag $(IMAGE_REPOSITORY):$(IMAGE_TAG) \
+		-f $(PROJECT_DIR)/operator/Dockerfile \
 		--push \
-		.
+		$(OPERATOR_IMAGE_CONTEXT)
+
+.PHONY: operator-image-buildx
+operator-image-buildx: operator-image-context ## Build local per-architecture operator images without pushing
+	@set -e; \
+	platforms="$$(cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . operator-platforms --dist $(DIST_DIR))"; \
+	for platform in $$(printf '%s' "$$platforms" | tr ',' ' '); do \
+		arch="$${platform#linux/}"; \
+		$(CONTAINER_TOOL) buildx build $(BUILD_ARGS) \
+			--platform "$$platform" --load \
+			--provenance=false --sbom=false \
+			--tag "$(IMAGE_REPOSITORY):$(IMAGE_TAG)-$$arch" \
+			-f $(PROJECT_DIR)/operator/Dockerfile \
+			$(OPERATOR_IMAGE_CONTEXT); \
+	done
+
+.PHONY: operator-image-verify-existing
+operator-image-verify-existing: ## Verify local images contain byte-identical GoReleaser operator binaries
+	cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . verify-operator-images --dist $(DIST_DIR) --image $(IMAGE_REPOSITORY):$(IMAGE_TAG) --container-tool $(CONTAINER_TOOL)
+
+.PHONY: operator-image-verify
+operator-image-verify: operator-image-buildx operator-image-verify-existing ## Build and verify both local operator image architectures
+
+##@ Release
+
+.PHONY: goreleaser-check
+goreleaser-check: goreleaser ## Validate the GoReleaser configuration
+	$(GORELEASER) check
+
+.PHONY: release-build
+release-build: build-cli build-operator ## Build both executable definitions for the current runner architecture
+
+.PHONY: release-snapshot
+release-snapshot: goreleaser release-validate ## Build the complete release locally without publishing
+	VERSION=$(VERSION) $(GORELEASER) release --snapshot --clean
+
+.PHONY: release-verify
+release-verify: ## Verify archives, checksums, versions, and internal operator artifacts in dist/
+	cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . verify-artifacts --dist $(DIST_DIR) --version $(VERSION)
+
+.PHONY: release-validate
+release-validate: ## Validate the synchronized module requirements for VERSION
+	cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . validate-version --root $(PROJECT_DIR) --version $(VERSION)
+
+.PHONY: release
+release: goreleaser ## Publish a guarded root-tag release
+	@set -eu; \
+	[ -n "$${GITHUB_TOKEN:-}" ] || { echo "GITHUB_TOKEN is required" >&2; exit 1; }; \
+	[ -n "$${HOMEBREW_TAP_TOKEN:-}" ] || { echo "HOMEBREW_TAP_TOKEN is required" >&2; exit 1; }; \
+	status="$$(git status --porcelain)"; \
+	[ -z "$$status" ] || { echo "the working tree must be clean" >&2; exit 1; }; \
+	tag="$$(git describe --tags --exact-match --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)"; \
+	printf '%s\n' "$$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "current ref is not a root vX.Y.Z tag" >&2; exit 1; }; \
+	[ "$${tag#v}" = "$(VERSION)" ] || { echo "VERSION $(VERSION) must be $${tag#v} (the tag without the leading v)" >&2; exit 1; }; \
+	(cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . validate-version --root $(PROJECT_DIR) --version $(VERSION) --require-tags); \
+	GORELEASER_CURRENT_TAG="$$tag" VERSION=$(VERSION) $(GORELEASER) release --clean
 
 ##@ Headlamp plugin
 
 .PHONY: wasm-engine
 wasm-engine: ## Build the WASM engine module (used by the Headlamp plugin)
-	cd wasm-engine && GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o karta.wasm .
+	cd wasm-engine && GOWORK=off GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o karta.wasm .
 	rm -f wasm-engine/wasm_exec.js
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" wasm-engine/wasm_exec.js
 
@@ -273,12 +386,17 @@ generate-samples: ## Regenerate docs/catalog/ from pkg/catalog
 	go run ./hack/gen-samples
 
 .PHONY: generate-licenses
+# The synchronized root version does not exist until release tags do. Karta is
+# excluded by the templates, so the CLI inventory drops it from a temporary copy.
 generate-licenses: go-licence-detector ## Regenerate NOTICE and THIRD_PARTY_LICENSES from current dependencies
 	@set -eu; \
 	echo "Generating NOTICE and THIRD_PARTY_LICENSES files from current dependencies using go-licence-detector"; \
-	go mod download -json > $(LOCALBIN)/root-deps.json; \
-	(cd cli && go mod download -json) > $(LOCALBIN)/cli-deps.json; \
-	(cd wasm-engine && go mod download -json) > $(LOCALBIN)/wasm-engine-deps.json; \
+	GOWORK=off go mod download -json > $(LOCALBIN)/root-deps.json; \
+	cp cli/go.mod $(LOCALBIN)/cli-license.mod; \
+	cp cli/go.sum $(LOCALBIN)/cli-license.sum; \
+	GOWORK=off go mod edit -modfile=$(LOCALBIN)/cli-license.mod -droprequire=github.com/run-ai/karta; \
+	GOWORK=off go mod download -modfile=$(LOCALBIN)/cli-license.mod -json > $(LOCALBIN)/cli-deps.json; \
+	(cd wasm-engine && GOWORK=off go mod download -json) > $(LOCALBIN)/wasm-engine-deps.json; \
 	python3 hack/merge-go-deps.py $(LOCALBIN)/root-deps.json $(LOCALBIN)/cli-deps.json $(LOCALBIN)/wasm-engine-deps.json > $(LOCALBIN)/deps.json; \
 	$(GO_LICENCE_DETECTOR) -in $(LOCALBIN)/deps.json \
 		-noticeTemplate=hack/licenses/notice.tpl \
@@ -288,18 +406,33 @@ generate-licenses: go-licence-detector ## Regenerate NOTICE and THIRD_PARTY_LICE
 	echo "Done"
 
 .PHONY: validate
-# status is captured into a variable rather than tested inline, so that a git
-# that cannot run is a hard error. Inline, a failing git yields empty output and
-# the emptiness check passes, reporting success having verified nothing.
+# A local act run starts from an intentionally dirty bind-mounted checkout. Its
+# optional baseline is a complete Git tree fingerprint, including untracked file
+# contents, so generators cannot hide changes behind an unchanged status code.
 validate: lib-generate lib-manifests lib-generate-mocks generate-licenses generate-samples ## Fail if any generated file is stale or untracked
 	@set -e; \
-	status="$$(git status --porcelain)"; \
-	test -z "$$status" || { echo "$$status"; \
-		echo "generated files are stale or untracked; run the generators and commit"; exit 1; }
+	if [ -n "$(VALIDATE_BASELINE)" ]; then \
+		expected="$$(cat "$(VALIDATE_BASELINE)")"; \
+		actual="$$($(MAKE) --no-print-directory worktree-fingerprint)"; \
+		[ "$$actual" = "$$expected" ] || { \
+			echo "working tree fingerprint changed: $$expected -> $$actual"; \
+			echo "generators changed the working tree"; \
+			echo "git status --porcelain:"; git status --porcelain; \
+			echo "git diff --stat:"; git diff --stat; \
+			exit 1; }; \
+	else \
+		status="$$(git status --porcelain)"; \
+		test -z "$$status" || { echo "$$status"; \
+			echo "generated files are stale or untracked; run the generators and commit"; exit 1; }; \
+	fi
+
+.PHONY: worktree-fingerprint
+worktree-fingerprint:
+	@cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . worktree-fingerprint --root $(PROJECT_DIR)
 
 .PHONY: download-dependencies
 download-dependencies: ## Pre-warm the module cache for the library module
-	go mod download
+	GOWORK=off go mod download
 
 ##@ CRDs
 
@@ -338,7 +471,7 @@ IMAGE_LOCK_PLATFORMS ?= linux/amd64 linux/arm64
 
 .PHONY: image-lock
 image-lock: ## Generate the per-platform ImageLock for a release (VERSION=vX.Y.Z)
-	cd hack/imagelock && go run . \
+	cd hack/imagelock && GOWORK=off go run . \
 		--chart $(KARTA_CHART_DIR) \
 		--version $(VERSION) \
 		$(foreach p,$(IMAGE_LOCK_PLATFORMS),--platform $(p)) \
@@ -346,11 +479,11 @@ image-lock: ## Generate the per-platform ImageLock for a release (VERSION=vX.Y.Z
 
 .PHONY: image-lock-verify
 image-lock-verify: ## Fail if the chart renders a container image the lock generator does not classify
-	cd hack/imagelock && go run . --chart $(KARTA_CHART_DIR) --verify-only
+	cd hack/imagelock && GOWORK=off go run . --chart $(KARTA_CHART_DIR) --verify-only
 
 .PHONY: image-lock-test
 image-lock-test: ## Run the image-lock generator unit tests
-	cd hack/imagelock && go test ./...
+	cd hack/imagelock && GOWORK=off go test ./...
 
 ##@ E2E
 
@@ -382,8 +515,8 @@ endif
 
 .PHONY: test-replay
 test-replay: ## Replay the recorded fixtures through Karta offline (no cluster)
-	cd test/e2e && go build ./...
-	cd test/e2e && go test ./replay_tests/...
+	cd test/e2e && GOWORK=off go build ./...
+	cd test/e2e && GOWORK=off go test ./replay_tests/...
 
 # Pick which operators to install:
 #   make e2e-up                          # everything
@@ -400,8 +533,8 @@ e2e-down: ## Tear down the e2e cluster (set CLUSTER_NAME for a named one)
 # should fail here rather than minutes into a live cluster run.
 .PHONY: record-e2e
 record-e2e: ## Record the fixtures against the current cluster - kind from e2e-up or your own (WORKLOADS="pod" a subset, FLOW="running" one flow, CLUSTER_NAME for a named kind cluster)
-	cd test/e2e && go test -count=1 ./recorder
-	cd test/e2e && CLUSTER_NAME=$(CLUSTER_NAME) $(E2E_KUBECONFIG) go test -count=1 -v -timeout $(E2E_TIMEOUT) ./flows $(if $(E2E_FOCUS)$(E2E_LABELS),-args $(if $(E2E_FOCUS),-ginkgo.focus="$(E2E_FOCUS)") $(if $(E2E_LABELS),-ginkgo.label-filter="$(E2E_LABELS)"))
+	cd test/e2e && GOWORK=off go test -count=1 ./recorder
+	cd test/e2e && GOWORK=off CLUSTER_NAME=$(CLUSTER_NAME) $(E2E_KUBECONFIG) go test -count=1 -v -timeout $(E2E_TIMEOUT) ./flows $(if $(E2E_FOCUS)$(E2E_LABELS),-args $(if $(E2E_FOCUS),-ginkgo.focus="$(E2E_FOCUS)") $(if $(E2E_LABELS),-ginkgo.label-filter="$(E2E_LABELS)"))
 
 .PHONY: verify-recordings
 verify-recordings: ## Fail if any recorded fixture ended with succeeded false (re-record it clean before pushing)
@@ -460,6 +593,14 @@ $(ENVTEST): | $(LOCALBIN)
 	echo "Downloading setup-envtest@$(ENVTEST_VERSION)"; \
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION); \
 	mv $(LOCALBIN)/setup-envtest $@
+
+.PHONY: goreleaser
+goreleaser: $(GORELEASER) ## Download the pinned GoReleaser OSS binary locally
+$(GORELEASER): | $(LOCALBIN)
+	@set -e; \
+	echo "Downloading goreleaser@$(GORELEASER_VERSION)"; \
+	GOTOOLCHAIN=auto GOBIN=$(LOCALBIN) go install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION); \
+	mv $(LOCALBIN)/goreleaser $@
 
 ##@ Help
 

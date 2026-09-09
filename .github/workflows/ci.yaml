@@ -14,6 +14,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Isolate local act tools
+        if: env.ACT == 'true'
+        run: echo "LOCALBIN=/tmp/karta-bin" >> "$GITHUB_ENV"
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
@@ -23,18 +27,40 @@ jobs:
             go.sum
             operator/go.sum
             cli/go.sum
+            hack/release/go.sum
+
+      - name: Install helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
 
       - name: Cache bin tools
         uses: actions/cache@v6
         with:
-          path: bin
-          key: ${{ runner.os }}-bin-${{ hashFiles('Makefile') }}-${{ hashFiles('go.mod') }}
+          path: |
+            bin/controller-gen-*
+            bin/go-licence-detector-*
+            bin/golangci-lint-*
+            bin/goreleaser-*
+            bin/setup-envtest-*
+            bin/k8s
+          key: ${{ runner.os }}-tools-v1-${{ hashFiles('Makefile') }}-${{ hashFiles('go.mod') }}
           restore-keys: |
-            ${{ runner.os }}-bin-${{ hashFiles('Makefile') }}-
-            ${{ runner.os }}-bin-
+            ${{ runner.os }}-tools-v1-${{ hashFiles('Makefile') }}-
+            ${{ runner.os }}-tools-v1-
 
-      - name: Run checks
-        run: make check
+      - name: Validate GoReleaser configuration
+        run: make goreleaser-check
+
+      - name: Run checks and build release executables
+        run: |
+          build_version="0.0.0-main-${GITHUB_SHA:0:7}"
+          if [[ "${ACT:-}" == "true" ]]; then
+            make worktree-fingerprint > /tmp/karta-tree-before-check
+            make check VERSION="$build_version" VALIDATE_BASELINE=/tmp/karta-tree-before-check
+          else
+            make check VERSION="$build_version"
+          fi
 
       - name: Lint helm chart
         run: make helm-lint
@@ -47,6 +73,12 @@ jobs:
 
       - name: Test air-gap image lock generator
         run: make image-lock-test
+
+      - name: Install shellcheck for act
+        if: env.ACT == 'true'
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends shellcheck=0.8.0-2
 
       - name: Lint shell scripts
         run: make lint-shell

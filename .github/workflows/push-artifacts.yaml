@@ -7,11 +7,6 @@ on:
     branches: [ main ]
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
-      - '[0-9]+.[0-9]+.[0-9]+'
-
-permissions:
-  contents: write
-  packages: write
 
 env:
   HELM_REGISTRY: "ghcr.io/run-ai/karta"
@@ -20,9 +15,18 @@ jobs:
   build-and-push:
     name: Build & Push Helm Chart and Operator Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Isolate local act tools
+        if: env.ACT == 'true'
+        run: echo "LOCALBIN=/tmp/karta-bin" >> "$GITHUB_ENV"
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -32,9 +36,22 @@ jobs:
             go.sum
             operator/go.sum
             cli/go.sum
+            hack/release/go.sum
 
       - name: Install helm
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
+
+      - name: Select execution mode
+        id: mode
+        run: |
+          if [[ "${ACT:-}" == "true" ]]; then
+            echo "dry-run=true" >> "$GITHUB_OUTPUT"
+            echo "act detected: all external publication is disabled"
+          else
+            echo "dry-run=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set package version
         run: |
@@ -43,12 +60,13 @@ jobs:
             PACKAGE_VERSION=${GITHUB_REF_NAME#v}
           else
             echo "Push to main: dev build keyed off the commit sha"
-            PACKAGE_VERSION=0.0.0-main-$(git rev-parse --short HEAD)
+            PACKAGE_VERSION=0.0.0-main-${GITHUB_SHA:0:7}
           fi
           echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> $GITHUB_ENV
           echo "PACKAGE_VERSION=$PACKAGE_VERSION"
 
       - name: Log in to GitHub Container Registry
+        if: steps.mode.outputs.dry-run != 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -56,6 +74,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify version not already published
+        if: steps.mode.outputs.dry-run != 'true'
         run: |
           if helm show chart oci://${{ env.HELM_REGISTRY }}/karta --version "$PACKAGE_VERSION" >/dev/null 2>&1; then
             echo "Version $PACKAGE_VERSION already published to ${{ env.HELM_REGISTRY }}/karta." >&2
@@ -67,20 +86,86 @@ jobs:
 
       - name: Run checks
         if: github.ref_type == 'tag'
-        run: make check
+        run: |
+          if [[ "${ACT:-}" == "true" ]]; then
+            make worktree-fingerprint > /tmp/karta-tree-before-check
+            make check VALIDATE_BASELINE=/tmp/karta-tree-before-check VERSION="$PACKAGE_VERSION"
+          else
+            make check VERSION="$PACKAGE_VERSION"
+          fi
+
+      - name: Validate synchronized module version
+        if: github.ref_type == 'tag'
+        run: make release-validate VERSION="$PACKAGE_VERSION"
 
       - name: Set up Docker Buildx
+        if: steps.mode.outputs.dry-run != 'true'
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push operator image
+      - name: Check Homebrew tap authentication
+        id: tap-auth
+        if: github.ref_type == 'tag' && steps.mode.outputs.dry-run != 'true'
+        env:
+          APP_CLIENT_ID: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          FALLBACK_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          make operator-image-buildx-push VERSION="$PACKAGE_VERSION"
+          if [[ -n "$APP_CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo "use-app=true" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$FALLBACK_TOKEN" ]]; then
+            echo "use-app=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "A Homebrew tap GitHub App or HOMEBREW_TAP_TOKEN is required." >&2
+            exit 1
+          fi
+
+      - name: Create Homebrew tap GitHub App token
+        id: tap-token
+        if: github.ref_type == 'tag' && steps.tap-auth.outputs.use-app == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: run-ai
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Publish tagged release and operator image
+        if: github.ref_type == 'tag' && steps.mode.outputs.dry-run != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token || secrets.HOMEBREW_TAP_TOKEN }}
+        run: make release VERSION="$PACKAGE_VERSION"
+
+      - name: Build and push main operator image
+        if: github.ref_type != 'tag' && steps.mode.outputs.dry-run != 'true'
+        run: make operator-image-buildx-push VERSION="$PACKAGE_VERSION"
+
+      - name: Build local main operator images
+        if: github.ref_type != 'tag' && steps.mode.outputs.dry-run == 'true'
+        run: make operator-image-buildx VERSION="$PACKAGE_VERSION"
+
+      - name: Build local tagged release snapshot
+        if: github.ref_type == 'tag' && steps.mode.outputs.dry-run == 'true'
+        run: make release-snapshot VERSION="$PACKAGE_VERSION"
+
+      - name: Verify local release artifacts
+        if: github.ref_type == 'tag' && steps.mode.outputs.dry-run == 'true'
+        run: make release-verify VERSION="$PACKAGE_VERSION"
+
+      - name: Verify local operator image identity
+        if: steps.mode.outputs.dry-run == 'true'
+        run: make operator-image-verify-existing VERSION="$PACKAGE_VERSION"
 
       - name: Generate air-gap image lock
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && steps.mode.outputs.dry-run != 'true'
         run: |
           # After the operator push so its tag resolves; PACKAGE_VERSION has no leading v.
           make image-lock VERSION="$PACKAGE_VERSION"
+
+      - name: Validate air-gap image lock locally
+        if: github.ref_type == 'tag' && steps.mode.outputs.dry-run == 'true'
+        run: make image-lock-verify
 
       - name: Build helm chart
         run: |
@@ -89,16 +174,16 @@ jobs:
             --app-version "$PACKAGE_VERSION"
 
       - name: Push Helm Chart
+        if: steps.mode.outputs.dry-run != 'true'
         run: |
           helm push ./charts/karta-$PACKAGE_VERSION.tgz oci://${{ env.HELM_REGISTRY }}
 
-      - name: Upload chart as release asset
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            charts/karta-${{ env.PACKAGE_VERSION }}.tgz
-            dist/imagelock-karta-v${{ env.PACKAGE_VERSION }}-linux-amd64.yaml
-            dist/imagelock-karta-v${{ env.PACKAGE_VERSION }}-linux-arm64.yaml
+      - name: Attach chart and image locks to the GoReleaser release
+        if: github.ref_type == 'tag' && steps.mode.outputs.dry-run != 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            "charts/karta-$PACKAGE_VERSION.tgz" \
+            "dist/imagelock-karta-v$PACKAGE_VERSION-linux-amd64.yaml" \
+            "dist/imagelock-karta-v$PACKAGE_VERSION-linux-arm64.yaml"

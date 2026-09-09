@@ -93,6 +93,19 @@ The structure in this view comes from Karta path expressions: the group, leader,
 kubectl apply -f https://raw.githubusercontent.com/run-ai/karta/main/charts/karta/crds/run.ai_kartas.yaml
 ```
 
+### Install the Karta CLI
+
+Install the latest macOS release with Homebrew:
+
+```bash
+brew install --cask run-ai/tap/karta
+```
+
+Linux and macOS archives are available from
+[GitHub Releases](https://github.com/run-ai/karta/releases). See the
+[CLI installation guide](docs/Installing%20Karta%20CLI.md) for archive checksum
+verification, architecture selection, and `go install` instructions.
+
 ### Use the Go library
 
 ```bash
@@ -249,6 +262,7 @@ See [ADOPTERS.md](ADOPTERS.md) for the full list of adopters. If you use Karta, 
 - [FIPS 140-3](docs/FIPS.md) - Running the operator with Go's FIPS 140-3 crypto module
 - [Karta definitions](docs/catalog/) - Real-world Karta definitions for common workload types
 - [Runnable examples](docs/examples/) - Offline quickstart and an installable controller-runtime example
+- [CLI installation](docs/Installing%20Karta%20CLI.md) - GitHub Release, Homebrew, and Go installation
 - [API Reference](https://pkg.go.dev/github.com/run-ai/karta) - Go package documentation
 - [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute (DCO required)
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) - Community standards and expectations

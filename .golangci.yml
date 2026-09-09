@@ -21,6 +21,7 @@ linters:
         path: _mock\.go
     paths:
       - bin
+      - headlamp-plugin/node_modules
       - vendor
       - third_party$
       - builtin$
@@ -37,6 +38,7 @@ formatters:
     generated: lax
     paths:
       - bin
+      - headlamp-plugin/node_modules
       - vendor
       - third_party$
       - builtin$
