@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
+name: Fork Release Snapshot Test
+
+on:
+  push:
+    branches:
+      - codex/issue-208-release-test
+
+permissions:
+  contents: read
+
+jobs:
+  release-snapshot:
+    if: github.repository == 'shaked-bouktus/karta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            operator/go.sum
+            cli/go.sum
+            hack/release/go.sum
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Validate GoReleaser configuration
+        run: make goreleaser-check
+
+      - name: Build release snapshot
+        run: make release-snapshot VERSION=0.2.3
+
+      - name: Verify release artifacts
+        run: make release-verify VERSION=0.2.3
+
+      - name: Verify operator image identity
+        run: make operator-image-verify-existing VERSION=0.2.3
