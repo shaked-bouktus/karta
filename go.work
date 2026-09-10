@@ -8,3 +8,5 @@ use (
 	./cli
 	./operator
 )
+
+replace github.com/run-ai/karta v0.2.999 => .
