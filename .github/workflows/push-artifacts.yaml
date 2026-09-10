@@ -4,7 +4,7 @@
 name: Upload artifacts to GitHub Container Registry
 on:
   push:
-    branches: [ main ]
+    branches: [ main, codex/issue-208-workflow-test ]
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
 
@@ -16,8 +16,8 @@ jobs:
     name: Build & Push Helm Chart and Operator Image
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      packages: write
+      contents: read
+      packages: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -46,9 +46,9 @@ jobs:
       - name: Select execution mode
         id: mode
         run: |
-          if [[ "${ACT:-}" == "true" ]]; then
+          if [[ "${ACT:-}" == "true" || "$GITHUB_REPOSITORY" != "run-ai/karta" ]]; then
             echo "dry-run=true" >> "$GITHUB_OUTPUT"
-            echo "act detected: all external publication is disabled"
+            echo "act or fork detected: all external publication is disabled"
           else
             echo "dry-run=false" >> "$GITHUB_OUTPUT"
           fi
@@ -99,7 +99,7 @@ jobs:
         run: make release-validate VERSION="$PACKAGE_VERSION"
 
       - name: Set up Docker Buildx
-        if: steps.mode.outputs.dry-run != 'true'
+        if: steps.mode.outputs.dry-run != 'true' || github.repository != 'run-ai/karta'
         uses: docker/setup-buildx-action@v4
 
       - name: Check Homebrew tap authentication
