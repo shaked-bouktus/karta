@@ -115,7 +115,10 @@ jobs:
         with:
           name: operator-e2e-artifacts-${{ matrix.webhook }}
           path: .artifacts/
-          if-no-files-found: ignore
+          # .artifacts is a dotted directory and upload-artifact skips hidden paths
+          # by default, so without this the upload silently contains nothing.
+          include-hidden-files: true
+          if-no-files-found: warn
 
       - name: Tear down
         if: always()
