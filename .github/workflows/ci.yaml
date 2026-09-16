@@ -100,6 +100,11 @@ jobs:
       - name: Run operator e2e
         run: make test-operator-e2e KARTA_WEBHOOK_MODE=${{ matrix.webhook }}
 
+      # TEMPORARY, DO NOT MERGE: forces the job red so the if: failure() diagnostics
+      # path actually runs. Nothing else has ever exercised it.
+      - name: Force failure to exercise diagnostics
+        run: exit 1
+
       - name: Collect diagnostics
         if: failure()
         run: kind export logs .artifacts/kind --name karta-e2e || true
