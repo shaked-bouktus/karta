@@ -52,14 +52,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "validate-version":
 		return runValidateVersion(args[1:])
-	case "stage-operator":
-		return runStageOperator(args[1:])
-	case "list-operator-platforms":
-		return runOperatorPlatforms(args[1:])
 	case "verify-artifacts":
 		return runVerifyArtifacts(args[1:])
-	case "verify-operator-images":
-		return runVerifyOperatorImages(args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
@@ -116,7 +110,21 @@ func validateModuleVersions(root, version string) error {
 			return fmt.Errorf("%s requires %s %s, want %s", moduleFile, rootModule, got, want)
 		}
 	}
-	return nil
+	contents, err := os.ReadFile(filepath.Join(root, "go.work"))
+	if err != nil {
+		return err
+	}
+	workspace, err := modfile.ParseWork("go.work", contents, nil)
+	if err != nil {
+		return fmt.Errorf("parse go.work: %w", err)
+	}
+	for _, replacement := range workspace.Replace {
+		if replacement.Old.Path == rootModule && replacement.Old.Version == want &&
+			replacement.New.Path == "." && replacement.New.Version == "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("go.work must replace %s %s with the local root module", rootModule, want)
 }
 
 func validateTags(root, version string) error {
@@ -124,7 +132,7 @@ func validateTags(root, version string) error {
 	if err != nil {
 		return err
 	}
-	for _, tag := range []string{"v" + version, "cli/v" + version, "operator/v" + version} {
+	for _, tag := range []string{"v" + version, "cli/v" + version} {
 		commit, err := commandOutput("git", "-C", root, "rev-list", "-n", "1", tag)
 		if err != nil {
 			return fmt.Errorf("resolve tag %s: %w", tag, err)
@@ -133,53 +141,6 @@ func validateTags(root, version string) error {
 			return fmt.Errorf("tag %s points to %s, want HEAD %s", tag, commit, head)
 		}
 	}
-	return nil
-}
-
-func runStageOperator(args []string) error {
-	flags := flag.NewFlagSet("stage-operator", flag.ContinueOnError)
-	dist := flags.String("dist", "dist", "GoReleaser dist directory")
-	out := flags.String("out", "dist/operator-image", "image context directory")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	artifacts, err := readArtifacts(*dist)
-	if err != nil {
-		return err
-	}
-	operator, err := operatorArtifacts(artifacts)
-	if err != nil {
-		return err
-	}
-	for _, item := range operator {
-		destination := filepath.Join(*out, item.Goos, item.Goarch, "karta-operator")
-		if err := copyFile(item.Path, destination); err != nil {
-			return err
-		}
-		fmt.Printf("staged %s\n", destination)
-	}
-	return nil
-}
-
-func runOperatorPlatforms(args []string) error {
-	flags := flag.NewFlagSet("list-operator-platforms", flag.ContinueOnError)
-	dist := flags.String("dist", "dist", "GoReleaser dist directory")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	artifacts, err := readArtifacts(*dist)
-	if err != nil {
-		return err
-	}
-	operator, err := operatorArtifacts(artifacts)
-	if err != nil {
-		return err
-	}
-	platforms := make([]string, 0, len(operator))
-	for _, item := range operator {
-		platforms = append(platforms, item.Goos+"/"+item.Goarch)
-	}
-	fmt.Println(strings.Join(platforms, ","))
 	return nil
 }
 
@@ -205,54 +166,9 @@ func readArtifacts(dist string) ([]artifact, error) {
 	return artifacts, nil
 }
 
-func operatorArtifacts(artifacts []artifact) ([]artifact, error) {
-	var result []artifact
-	for _, item := range artifacts {
-		if item.Type == "Binary" && extraID(item) == "karta-operator" {
-			result = append(result, item)
-		}
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Goos+"/"+result[i].Goarch < result[j].Goos+"/"+result[j].Goarch
-	})
-	want := []string{"linux/amd64", "linux/arm64"}
-	if len(result) != len(want) {
-		return nil, fmt.Errorf("found %d operator binaries, want %d", len(result), len(want))
-	}
-	for i, item := range result {
-		if got := item.Goos + "/" + item.Goarch; got != want[i] {
-			return nil, fmt.Errorf("operator platform %q, want %q", got, want[i])
-		}
-		if filepath.Base(item.Path) != "karta-operator" {
-			return nil, fmt.Errorf("operator artifact %q has unexpected filename", item.Path)
-		}
-	}
-	return result, nil
-}
-
 func extraID(item artifact) string {
 	value, _ := item.Extra["ID"].(string)
 	return value
-}
-
-func copyFile(source, destination string) error {
-	input, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer input.Close()
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		return err
-	}
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(output, input); err != nil {
-		_ = output.Close()
-		return err
-	}
-	return output.Close()
 }
 
 func runVerifyArtifacts(args []string) error {
@@ -264,9 +180,6 @@ func runVerifyArtifacts(args []string) error {
 	}
 	artifacts, err := readArtifacts(*dist)
 	if err != nil {
-		return err
-	}
-	if _, err := operatorArtifacts(artifacts); err != nil {
 		return err
 	}
 	expected := expectedArchiveNames(*version)
@@ -302,7 +215,7 @@ func runVerifyArtifacts(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("verified four CLI archives, checksums, and two internal operator binaries for %s\n", *version)
+	fmt.Printf("verified four CLI archives, checksums, and Homebrew Cask for %s\n", *version)
 	if len(verified) != 0 {
 		fmt.Printf("verified host executable versions: %s\n", strings.Join(verified, ", "))
 	}
@@ -441,7 +354,7 @@ func fileSHA256(path string) (string, error) {
 func verifyHostVersions(artifacts []artifact, version string) ([]string, []string, error) {
 	var verified []string
 	var skipped []string
-	for _, id := range []string{"karta", "karta-operator"} {
+	for _, id := range []string{"karta"} {
 		var path string
 		for _, item := range artifacts {
 			if item.Type == "Binary" && extraID(item) == id && item.Goos == runtime.GOOS && item.Goarch == runtime.GOARCH {
@@ -463,65 +376,6 @@ func verifyHostVersions(artifacts []artifact, version string) ([]string, []strin
 		verified = append(verified, id)
 	}
 	return verified, skipped, nil
-}
-
-func runVerifyOperatorImages(args []string) error {
-	flags := flag.NewFlagSet("verify-operator-images", flag.ContinueOnError)
-	dist := flags.String("dist", "dist", "GoReleaser dist directory")
-	image := flags.String("image", "", "base image reference without architecture suffix")
-	containerTool := flags.String("container-tool", "docker", "container CLI")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	artifacts, err := readArtifacts(*dist)
-	if err != nil {
-		return err
-	}
-	operator, err := operatorArtifacts(artifacts)
-	if err != nil {
-		return err
-	}
-	for _, item := range operator {
-		if err := verifyOperatorImage(item, *image+"-"+item.Goarch, *containerTool); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func verifyOperatorImage(binary artifact, image, containerTool string) error {
-	architecture, err := commandOutput(containerTool, "image", "inspect", "--format", "{{.Architecture}}", image)
-	if err != nil {
-		return err
-	}
-	if architecture != binary.Goarch {
-		return fmt.Errorf("image %s architecture is %s, want %s", image, architecture, binary.Goarch)
-	}
-	containerName := fmt.Sprintf("karta-operator-identity-%s-%d", binary.Goarch, os.Getpid())
-	if _, err := commandOutput(containerTool, "create", "--platform", binary.Goos+"/"+binary.Goarch, "--name", containerName, image); err != nil {
-		return err
-	}
-	defer func() {
-		_ = exec.Command(containerTool, "rm", "-f", containerName).Run()
-	}()
-	extracted := filepath.Join(os.TempDir(), containerName)
-	defer os.Remove(extracted)
-	if _, err := commandOutput(containerTool, "cp", containerName+":/karta-operator", extracted); err != nil {
-		return err
-	}
-	binaryDigest, err := fileSHA256(binary.Path)
-	if err != nil {
-		return err
-	}
-	imageDigest, err := fileSHA256(extracted)
-	if err != nil {
-		return err
-	}
-	if binaryDigest != imageDigest {
-		return fmt.Errorf("%s binary digest %s differs from image digest %s", binary.Goarch, binaryDigest, imageDigest)
-	}
-	fmt.Printf("verified %s %s\n", binary.Goarch, binaryDigest)
-	return nil
 }
 
 func commandOutput(name string, args ...string) (string, error) {

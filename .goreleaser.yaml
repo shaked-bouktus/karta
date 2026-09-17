@@ -25,25 +25,6 @@ builds:
       - -X github.com/dsx-ai-factory/workload-map/pkg/version.version={{ .Env.VERSION }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
-  - id: karta-operator
-    dir: operator
-    main: ./cmd
-    binary: karta-operator
-    goos:
-      - linux
-    goarch:
-      - amd64
-      - arm64
-    env:
-      - CGO_ENABLED=0
-      - GOFIPS140=v1.0.0
-    flags:
-      - -trimpath
-      - -buildvcs=false
-    ldflags:
-      - -X github.com/dsx-ai-factory/workload-map/pkg/version.version={{ .Env.VERSION }}
-    mod_timestamp: "{{ .CommitTimestamp }}"
-
 archives:
   - id: karta
     ids:
@@ -71,22 +52,6 @@ source:
 
 sboms:
   - disable: true
-
-dockers_v2:
-  - id: karta-operator
-    ids:
-      - karta-operator
-    dockerfile: operator/Dockerfile
-    images:
-      - "{{ .Env.KARTA_OPERATOR_IMAGE_REPOSITORY }}"
-    tags:
-      - "{{ .Env.KARTA_OPERATOR_IMAGE_TAG }}"
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    sbom: false
-    flags:
-      - --provenance=false
 
 homebrew_casks:
   - name: karta

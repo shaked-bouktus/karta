@@ -8,3 +8,5 @@ use (
 	./cli
 	./operator
 )
+
+replace github.com/dsx-ai-factory/workload-map v0.2.3 => .

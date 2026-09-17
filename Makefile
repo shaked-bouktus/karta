@@ -126,7 +126,7 @@ check-lib: fmt-check-lib vet-lib lint-lib validate verify-recordings test-lib te
 
 .PHONY: fmt-karta-wasm
 fmt-karta-wasm: ## Format the karta-wasm module
-	go -C karta-wasm fmt ./...
+	GOWORK=off go -C karta-wasm fmt ./...
 
 .PHONY: fmt-check-karta-wasm
 fmt-check-karta-wasm: ## Check karta-wasm formatting without modifying files
@@ -136,16 +136,16 @@ fmt-check-karta-wasm: ## Check karta-wasm formatting without modifying files
 
 .PHONY: vet-karta-wasm
 vet-karta-wasm: ## go vet the karta-wasm module (host and js builds)
-	go -C karta-wasm vet ./...
-	cd karta-wasm && GOOS=js GOARCH=wasm go vet ./...
+	GOWORK=off go -C karta-wasm vet ./...
+	cd karta-wasm && GOWORK=off GOOS=js GOARCH=wasm go vet ./...
 
 .PHONY: lint-karta-wasm
 lint-karta-wasm: golangci-lint ## Lint the karta-wasm module
-	cd karta-wasm && $(GOLANGCI_LINT) run $(GOLANGCI_LINT_FLAGS) -c $(PROJECT_DIR)/.golangci.yml
+	cd karta-wasm && GOWORK=off $(GOLANGCI_LINT) run $(GOLANGCI_LINT_FLAGS) -c $(PROJECT_DIR)/.golangci.yml
 
 .PHONY: test-karta-wasm
 test-karta-wasm: ## Run the karta-wasm module tests on the host
-	go -C karta-wasm test ./...
+	GOWORK=off go -C karta-wasm test ./...
 
 .PHONY: check-karta-wasm
 check-karta-wasm: fmt-check-karta-wasm vet-karta-wasm lint-karta-wasm test-karta-wasm ## Full karta-wasm presubmit
@@ -348,7 +348,7 @@ release: goreleaser ## Publish a guarded root-tag release
 
 .PHONY: karta-wasm
 karta-wasm: ## Build the WASM engine module (used by the Headlamp plugin)
-	cd karta-wasm && GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o karta.wasm .
+	cd karta-wasm && GOWORK=off GOOS=js GOARCH=wasm go build -trimpath -ldflags="-s -w" -o karta.wasm .
 	rm -f karta-wasm/wasm_exec.js
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" karta-wasm/wasm_exec.js
 

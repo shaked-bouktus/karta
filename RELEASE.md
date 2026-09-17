@@ -38,9 +38,9 @@ release train:
 - `github.com/dsx-ai-factory/workload-map/cli`
 - `github.com/dsx-ai-factory/workload-map/operator`
 
-Release `1.2.3` uses the tags `v1.2.3`, `cli/v1.2.3`, and
-`operator/v1.2.3`. All three tags must point to the same commit. Only the root
-tag starts the release workflow.
+Release `1.2.3` uses the tags `v1.2.3` and `cli/v1.2.3`. Both tags must point
+to the same commit. Only the root tag starts the release workflow. The operator
+ships as a container image and does not need its own module tag.
 
 The CLI and operator `go.mod` files must require the matching root module
 version. Update both requirements in the release preparation change:
@@ -48,14 +48,16 @@ version. Update both requirements in the release preparation change:
 ```bash
 go mod edit -modfile=cli/go.mod -require=github.com/dsx-ai-factory/workload-map@v1.2.3
 go mod edit -modfile=operator/go.mod -require=github.com/dsx-ai-factory/workload-map@v1.2.3
+go work edit -replace=github.com/dsx-ai-factory/workload-map@v1.2.3=.
 make release-validate VERSION=1.2.3
 ```
 
-Do not add a relative `replace` directive. The root `go.work` file supplies the
-local root module during development and CI. The matching root version does not
-exist until the synchronized tags are pushed, so release preparation cannot run
-the nested modules with `GOWORK=off` or precompute their matching root-module
-checksums.
+Do not add a relative `replace` directive to either nested `go.mod` file. The
+version-specific replacement in the root `go.work` file supplies the local root
+module during development and CI, and must be updated with the two requirements.
+The matching root version does not exist until the synchronized tags are pushed,
+so release preparation cannot run the nested modules with `GOWORK=off` or
+precompute their matching root-module checksums.
 
 The release-preparation change can still pass CI before those tags exist.
 License generation removes the Karta requirement only from a temporary copy of
@@ -73,32 +75,30 @@ make goreleaser-check
 make release-build VERSION="$(git describe --tags --always --dirty --match 'v[0-9]*.[0-9]*.[0-9]*')"
 make release-snapshot VERSION=1.2.3
 make release-verify VERSION=1.2.3
-make operator-image-verify-existing VERSION=1.2.3
 ```
 
 `release-build` compiles both executable definitions only for the current
-runner target. `release-snapshot` builds the complete release matrix and local
-operator images without publishing. It does not need release credentials.
+runner target. `release-snapshot` builds the complete CLI release matrix
+without publishing. It does not need release credentials.
 
 ## How a release is cut
 
 Before tagging, add the version entry to [CHANGELOG.md](CHANGELOG.md), update the
 two root-module requirements, and run the checks above. After that preparation
-change is merged, create all three tags from the same commit and push them in one
+change is merged, create both tags from the same commit and push them in one
 operation:
 
 ```bash
 git tag v1.2.3
 git tag cli/v1.2.3
-git tag operator/v1.2.3
-git push origin v1.2.3 cli/v1.2.3 operator/v1.2.3
+git push origin v1.2.3 cli/v1.2.3
 ```
 
-The root tag runs the coordinated workflow. GoReleaser builds the four CLI
-archives, checksum manifest, and multi-architecture operator image. It is the
-only GitHub Release creator. After that succeeds, the workflow generates the two
-image locks, publishes the Helm chart, and attaches the chart and locks to the
-existing release.
+The root tag runs the coordinated workflow. The workflow builds and pushes the
+multi-architecture operator image from source, generates the two image locks,
+and publishes the Helm chart. GoReleaser then builds the four CLI archives and
+checksum manifest, updates the Homebrew Cask, and creates the GitHub Release.
+Finally, the workflow attaches the chart and locks to the existing release.
 
 The guarded publishing command used by the workflow is:
 
@@ -106,8 +106,8 @@ The guarded publishing command used by the workflow is:
 make release VERSION=1.2.3
 ```
 
-It fails unless the checkout is clean and at the matching root tag, all three
-tags point to `HEAD`, the nested module requirements match, and the required
+It fails unless the checkout is clean and at the matching root tag, both tags
+point to `HEAD`, the nested module requirements match, and the required
 credentials are present. It must normally run only in the release workflow.
 
 ## Release credentials

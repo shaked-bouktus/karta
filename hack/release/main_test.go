@@ -36,6 +36,13 @@ var _ = Describe("Release validation", func() {
 			Expect(runValidateVersion([]string{"--root", root, "--version", "1.2.3"})).To(Succeed())
 		})
 
+		It("rejects a stale workspace replacement", func() {
+			root := GinkgoT().TempDir()
+			writeModuleFiles(root, "require "+rootModule+" v1.2.3\n")
+			writeWorkspace(root, "v1.2.2")
+			Expect(validateModuleVersions(root, "1.2.3")).To(MatchError(ContainSubstring("go.work must replace")))
+		})
+
 		DescribeTable("rejects publication-unsafe module files",
 			func(body, message string) {
 				root := GinkgoT().TempDir()
@@ -64,50 +71,12 @@ var _ = Describe("Release validation", func() {
 			{"-c", "user.name=Karta Test", "-c", "user.email=karta@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "test"},
 			{"-c", "tag.gpgSign=false", "tag", "v1.2.3"},
 			{"-c", "tag.gpgSign=false", "tag", "cli/v1.2.3"},
-			{"-c", "tag.gpgSign=false", "tag", "operator/v1.2.3"},
 		}
 		for _, args := range commands {
 			_, err := commandOutput("git", append([]string{"-C", root}, args...)...)
 			Expect(err).NotTo(HaveOccurred())
 		}
 		Expect(validateTags(root, "1.2.3")).To(Succeed())
-	})
-
-	Describe("operator artifacts", func() {
-		validArtifacts := func() []artifact {
-			return []artifact{
-				{Name: "karta-operator", Path: "amd64/karta-operator", Goos: "linux", Goarch: "amd64", Type: "Binary", Extra: map[string]any{"ID": "karta-operator"}},
-				{Name: "karta-operator", Path: "arm64/karta-operator", Goos: "linux", Goarch: "arm64", Type: "Binary", Extra: map[string]any{"ID": "karta-operator"}},
-				{Name: "karta", Path: "cli/karta", Goos: "linux", Goarch: "amd64", Type: "Binary", Extra: map[string]any{"ID": "karta"}},
-			}
-		}
-
-		It("selects the exact operator matrix", func() {
-			got, err := operatorArtifacts(validArtifacts())
-			Expect(err).NotTo(HaveOccurred())
-			Expect(got).To(HaveLen(2))
-			Expect([]string{got[0].Goarch, got[1].Goarch}).To(Equal([]string{"amd64", "arm64"}))
-		})
-
-		It("rejects a missing platform", func() {
-			_, err := operatorArtifacts(validArtifacts()[:1])
-			Expect(err).To(MatchError(ContainSubstring("found 1 operator binaries, want 2")))
-		})
-
-		It("rejects an extra platform", func() {
-			artifacts := append(validArtifacts(), artifact{
-				Name: "karta-operator", Path: "s390x/karta-operator", Goos: "linux", Goarch: "s390x", Type: "Binary", Extra: map[string]any{"ID": "karta-operator"},
-			})
-			_, err := operatorArtifacts(artifacts)
-			Expect(err).To(MatchError(ContainSubstring("found 3 operator binaries, want 2")))
-		})
-
-		It("rejects a renamed executable", func() {
-			artifacts := validArtifacts()
-			artifacts[0].Path = "amd64/operator"
-			_, err := operatorArtifacts(artifacts)
-			Expect(err).To(MatchError(ContainSubstring("unexpected filename")))
-		})
 	})
 
 	It("resolves GoReleaser artifact paths from the project root", func() {
@@ -186,39 +155,20 @@ var _ = Describe("Release validation", func() {
 		})
 	})
 
-	It("copies an executable without changing its bytes", func() {
-		directory := GinkgoT().TempDir()
-		source := filepath.Join(directory, "source")
-		destination := filepath.Join(directory, "nested", "destination")
-		Expect(os.WriteFile(source, []byte("operator bytes"), 0o644)).To(Succeed())
-		Expect(copyFile(source, destination)).To(Succeed())
-		contents, err := os.ReadFile(destination)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(contents)).To(Equal("operator bytes"))
-		info, err := os.Stat(destination)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(info.Mode().Perm()).To(Equal(os.FileMode(0o755)))
-	})
-
 	It("verifies host executable versions", func() {
 		path := filepath.Join(GinkgoT().TempDir(), "version-command")
 		Expect(os.WriteFile(path, []byte("#!/bin/sh\nprintf '1.2.3\\n'\n"), 0o755)).To(Succeed())
 		artifacts := []artifact{
 			{Path: path, Goos: runtime.GOOS, Goarch: runtime.GOARCH, Type: "Binary", Extra: map[string]any{"ID": "karta"}},
-			{Path: path, Goos: runtime.GOOS, Goarch: runtime.GOARCH, Type: "Binary", Extra: map[string]any{"ID": "karta-operator"}},
 		}
 		verified, skipped, err := verifyHostVersions(artifacts, "1.2.3")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(verified).To(Equal([]string{"karta", "karta-operator"}))
+		Expect(verified).To(Equal([]string{"karta"}))
 		Expect(skipped).To(BeEmpty())
 
 		_, _, err = verifyHostVersions(artifacts, "1.2.4")
 		Expect(err).To(MatchError(ContainSubstring("want \"1.2.4\"")))
 
-		verified, skipped, err = verifyHostVersions(artifacts[:1], "1.2.3")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(verified).To(Equal([]string{"karta"}))
-		Expect(skipped).To(Equal([]string{"karta-operator"}))
 	})
 })
 
@@ -229,6 +179,13 @@ func writeModuleFiles(root, body string) {
 		contents := "module " + rootModule + "/" + module + "\n\ngo 1.26.3\n\n" + body
 		Expect(os.WriteFile(filepath.Join(root, module, "go.mod"), []byte(contents), 0o644)).To(Succeed())
 	}
+	writeWorkspace(root, "v1.2.3")
+}
+
+func writeWorkspace(root, version string) {
+	GinkgoHelper()
+	contents := "go 1.26.3\n\nreplace " + rootModule + " " + version + " => .\n"
+	Expect(os.WriteFile(filepath.Join(root, "go.work"), []byte(contents), 0o644)).To(Succeed())
 }
 
 func writeArchive(path string, names []string) {
