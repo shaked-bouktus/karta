@@ -7,7 +7,6 @@ on:
     branches: [ main ]
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
-      - '[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
   contents: write
@@ -21,6 +20,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -30,9 +31,12 @@ jobs:
             go.sum
             operator/go.sum
             cli/go.sum
+            hack/release/go.sum
 
       - name: Install helm
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4
 
       - name: Set package version
         run: |
@@ -56,13 +60,6 @@ jobs:
           echo "HELM_REGISTRY=$REGISTRY_NAMESPACE" >> $GITHUB_ENV
           echo "Publishing artifacts to $REGISTRY_NAMESPACE"
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Verify version not already published
         run: |
           if helm show chart oci://${{ env.HELM_REGISTRY }}/karta --version "$PACKAGE_VERSION" >/dev/null 2>&1; then
@@ -75,10 +72,21 @@ jobs:
 
       - name: Run checks
         if: github.ref_type == 'tag'
-        run: make check
+        run: make check VERSION="$PACKAGE_VERSION"
+
+      - name: Validate synchronized module version
+        if: github.ref_type == 'tag'
+        run: make release-validate VERSION="$PACKAGE_VERSION"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push operator image
         run: |
@@ -101,13 +109,47 @@ jobs:
         run: |
           helm push ./charts/karta-$PACKAGE_VERSION.tgz oci://${{ env.HELM_REGISTRY }}
 
-      - name: Upload chart as release asset
+      - name: Check Homebrew tap authentication
+        id: tap-auth
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v3
+        env:
+          APP_CLIENT_ID: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          FALLBACK_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -n "$APP_CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo "use-app=true" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$FALLBACK_TOKEN" ]]; then
+            echo "use-app=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "A Homebrew tap GitHub App or HOMEBREW_TAP_TOKEN is required." >&2
+            exit 1
+          fi
+
+      - name: Create Homebrew tap GitHub App token
+        id: tap-token
+        if: github.ref_type == 'tag' && steps.tap-auth.outputs.use-app == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          files: |
-            charts/karta-${{ env.PACKAGE_VERSION }}.tgz
-            dist/imagelock-karta-v${{ env.PACKAGE_VERSION }}-linux-amd64.yaml
-            dist/imagelock-karta-v${{ env.PACKAGE_VERSION }}-linux-arm64.yaml
+          client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: run-ai
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Publish tagged CLI release
+        if: github.ref_type == 'tag'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token || secrets.HOMEBREW_TAP_TOKEN }}
+        run: make release VERSION="$PACKAGE_VERSION"
+
+      - name: Attach chart and image locks to the GoReleaser release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            "charts/karta-$PACKAGE_VERSION.tgz" \
+            "dist/imagelock-karta-v$PACKAGE_VERSION-linux-amd64.yaml" \
+            "dist/imagelock-karta-v$PACKAGE_VERSION-linux-arm64.yaml"
