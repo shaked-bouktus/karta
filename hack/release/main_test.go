@@ -200,54 +200,6 @@ var _ = Describe("Release validation", func() {
 		Expect(info.Mode().Perm()).To(Equal(os.FileMode(0o755)))
 	})
 
-	It("fingerprints worktree paths, modes, and contents", func() {
-		root := GinkgoT().TempDir()
-		Expect(os.WriteFile(filepath.Join(root, "first"), []byte("one"), 0o644)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(root, "second"), []byte("two"), 0o755)).To(Succeed())
-		first, err := fingerprintPaths(root, []string{"second", "missing", "first"})
-		Expect(err).NotTo(HaveOccurred())
-		reordered, err := fingerprintPaths(root, []string{"first", "second", "missing"})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(reordered).To(Equal(first))
-
-		Expect(os.WriteFile(filepath.Join(root, "first"), []byte("changed"), 0o644)).To(Succeed())
-		changed, err := fingerprintPaths(root, []string{"first", "second", "missing"})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(changed).NotTo(Equal(first))
-	})
-
-	It("fingerprints an explicit repository root", func() {
-		root := GinkgoT().TempDir()
-		Expect(os.WriteFile(filepath.Join(root, "tracked"), []byte("tracked"), 0o644)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(root, "untracked"), []byte("untracked"), 0o644)).To(Succeed())
-		_, err := commandOutput("git", "-C", root, "init")
-		Expect(err).NotTo(HaveOccurred())
-		_, err = commandOutput("git", "-C", root, "add", "tracked")
-		Expect(err).NotTo(HaveOccurred())
-
-		actual, err := worktreeFingerprint(root)
-		Expect(err).NotTo(HaveOccurred())
-		expected, err := fingerprintPaths(root, []string{"tracked", "untracked"})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(actual).To(Equal(expected))
-	})
-
-	It("keeps stderr noise out of a worktree fingerprint", func() {
-		root := GinkgoT().TempDir()
-		Expect(os.WriteFile(filepath.Join(root, "tracked"), []byte("contents"), 0o644)).To(Succeed())
-		command := filepath.Join(root, "list-files")
-		Expect(os.WriteFile(command, []byte("#!/bin/sh\nprintf 'tracked\\000'\nprintf 'diagnostic noise\\n' >&2\n"), 0o755)).To(Succeed())
-
-		output, err := commandOutputBytes(command)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(nulSeparatedPaths(output)).To(Equal([]string{"tracked"}))
-		actual, err := fingerprintPaths(root, nulSeparatedPaths(output))
-		Expect(err).NotTo(HaveOccurred())
-		expected, err := fingerprintPaths(root, []string{"tracked"})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(actual).To(Equal(expected))
-	})
-
 	It("verifies host executable versions", func() {
 		path := filepath.Join(GinkgoT().TempDir(), "version-command")
 		Expect(os.WriteFile(path, []byte("#!/bin/sh\nprintf '1.2.3\\n'\n"), 0o755)).To(Succeed())

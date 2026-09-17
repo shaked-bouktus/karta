@@ -30,7 +30,7 @@ config/crd/_.yaml
 # Generated air-gap image locks (make image-lock)
 /dist/
 
-# Packaged Helm charts (make release or local act release rehearsal)
+# Packaged Helm charts
 /charts/*.tgz
 
 # built imagelock tool binary

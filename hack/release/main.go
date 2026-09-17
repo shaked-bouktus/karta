@@ -54,14 +54,12 @@ func run(args []string) error {
 		return runValidateVersion(args[1:])
 	case "stage-operator":
 		return runStageOperator(args[1:])
-	case "operator-platforms":
+	case "list-operator-platforms":
 		return runOperatorPlatforms(args[1:])
 	case "verify-artifacts":
 		return runVerifyArtifacts(args[1:])
 	case "verify-operator-images":
 		return runVerifyOperatorImages(args[1:])
-	case "worktree-fingerprint":
-		return runWorktreeFingerprint(args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
@@ -164,7 +162,7 @@ func runStageOperator(args []string) error {
 }
 
 func runOperatorPlatforms(args []string) error {
-	flags := flag.NewFlagSet("operator-platforms", flag.ContinueOnError)
+	flags := flag.NewFlagSet("list-operator-platforms", flag.ContinueOnError)
 	dist := flags.String("dist", "dist", "GoReleaser dist directory")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -547,86 +545,4 @@ func commandOutputBytes(name string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return output, nil
-}
-
-func runWorktreeFingerprint(args []string) error {
-	flags := flag.NewFlagSet("worktree-fingerprint", flag.ContinueOnError)
-	root := flags.String("root", ".", "repository root")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("worktree-fingerprint does not accept arguments")
-	}
-	fingerprint, err := worktreeFingerprint(*root)
-	if err != nil {
-		return err
-	}
-	fmt.Println(fingerprint)
-	return nil
-}
-
-func worktreeFingerprint(root string) (string, error) {
-	output, err := commandOutputBytes("git", "-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return "", fmt.Errorf("list worktree files: %w", err)
-	}
-	return fingerprintPaths(root, nulSeparatedPaths(output))
-}
-
-func nulSeparatedPaths(output []byte) []string {
-	paths := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
-	if len(paths) == 1 && paths[0] == "" {
-		return nil
-	}
-	return paths
-}
-
-func fingerprintPaths(root string, paths []string) (string, error) {
-	paths = append([]string(nil), paths...)
-	sort.Strings(paths)
-	hash := sha256.New()
-	for _, path := range paths {
-		fullPath := filepath.Join(root, filepath.FromSlash(path))
-		info, err := os.Lstat(fullPath)
-		if errors.Is(err, os.ErrNotExist) {
-			if _, err := fmt.Fprintf(hash, "deleted\x00%s\x00", path); err != nil {
-				return "", err
-			}
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("inspect %s: %w", path, err)
-		}
-		if _, err := fmt.Fprintf(hash, "%s\x00%s\x00", path, info.Mode()); err != nil {
-			return "", err
-		}
-		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			target, err := os.Readlink(fullPath)
-			if err != nil {
-				return "", fmt.Errorf("read symlink %s: %w", path, err)
-			}
-			if _, err := io.WriteString(hash, target); err != nil {
-				return "", err
-			}
-		case info.Mode().IsRegular():
-			file, err := os.Open(fullPath)
-			if err != nil {
-				return "", fmt.Errorf("open %s: %w", path, err)
-			}
-			_, copyErr := io.Copy(hash, file)
-			closeErr := file.Close()
-			if copyErr != nil {
-				return "", fmt.Errorf("hash %s: %w", path, copyErr)
-			}
-			if closeErr != nil {
-				return "", fmt.Errorf("close %s: %w", path, closeErr)
-			}
-		}
-		if _, err := hash.Write([]byte{0}); err != nil {
-			return "", err
-		}
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }

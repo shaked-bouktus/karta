@@ -63,9 +63,6 @@ the CLI module metadata. Karta itself is excluded from the CLI license templates
 so the third-party inventory does not change and the source `go.mod` remains
 untouched.
 
-Update `ref` and `ref_name` in `.github/act/push-tag.json` to the matching
-`v1.2.3` tag before running the tag workflow with `act`.
-
 ## Local release validation
 
 The root Makefile is the release interface. GoReleaser is installed locally at
@@ -83,33 +80,12 @@ make operator-image-verify-existing VERSION=1.2.3
 runner target. `release-snapshot` builds the complete release matrix and local
 operator images without publishing. It does not need release credentials.
 
-The workflow paths can be exercised safely with `act`:
-
-```bash
-act pull_request --pull=false --bind --network bridge \
-  -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-22.04 \
-  -W .github/workflows/ci.yaml -j ci \
-  -e .github/act/pull_request.json
-act push --pull=false --bind --network bridge \
-  -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-22.04 \
-  -W .github/workflows/push-artifacts.yaml -j build-and-push \
-  -e .github/act/push-main.json
-act push --pull=false --bind --network bridge \
-  -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-22.04 \
-  -W .github/workflows/push-artifacts.yaml -j build-and-push \
-  -e .github/act/push-tag.json
-```
-
-The workflow detects `act` and replaces every login, upload, and push with local
-build and verification steps. Never pass real publication credentials to these
-runs.
-
 ## How a release is cut
 
 Before tagging, add the version entry to [CHANGELOG.md](CHANGELOG.md), update the
-two root-module requirements, update the tag `act` fixture, and run the checks
-above. After that preparation change is merged, create all three tags from the
-same commit and push them in one operation:
+two root-module requirements, and run the checks above. After that preparation
+change is merged, create all three tags from the same commit and push them in one
+operation:
 
 ```bash
 git tag v1.2.3
