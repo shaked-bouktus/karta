@@ -109,39 +109,13 @@ jobs:
         run: |
           helm push ./charts/karta-$PACKAGE_VERSION.tgz oci://${{ env.HELM_REGISTRY }}
 
-      - name: Check Homebrew tap authentication
-        id: tap-auth
-        if: github.ref_type == 'tag'
-        env:
-          APP_CLIENT_ID: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
-          FALLBACK_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          if [[ -n "$APP_CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
-            echo "use-app=true" >> "$GITHUB_OUTPUT"
-          elif [[ -n "$FALLBACK_TOKEN" ]]; then
-            echo "use-app=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "A Homebrew tap GitHub App or HOMEBREW_TAP_TOKEN is required." >&2
-            exit 1
-          fi
-
-      - name: Create Homebrew tap GitHub App token
-        id: tap-token
-        if: github.ref_type == 'tag' && steps.tap-auth.outputs.use-app == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
-          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
-          owner: run-ai
-          repositories: homebrew-tap
-          permission-contents: write
-
       - name: Publish tagged CLI release
         if: github.ref_type == 'tag'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token || secrets.HOMEBREW_TAP_TOKEN }}
+          # Canary-only placeholder. The fork config generates the Cask but has
+          # skip_upload enabled because no cross-repository token is configured.
+          HOMEBREW_TAP_TOKEN: canary-skip-upload
         run: make release VERSION="$PACKAGE_VERSION"
 
       - name: Attach chart and image locks to the GoReleaser release

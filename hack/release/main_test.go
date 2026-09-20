@@ -143,7 +143,7 @@ var _ = Describe("Release validation", func() {
 				digest, err := fileSHA256(path)
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Fprintf(&cask, "sha256 \"%s\"\n", digest)
-				fmt.Fprintf(&cask, "url \"https://github.com/run-ai/karta/releases/download/v#{version}/karta_#{version}_darwin_%s.tar.gz\"\n", arch)
+				fmt.Fprintf(&cask, "url \"https://github.com/shaked-bouktus/karta/releases/download/v#{version}/karta_#{version}_darwin_%s.tar.gz\"\n", arch)
 				archives[name] = artifact{Name: name, Path: path}
 			}
 			path := filepath.Join(directory, "karta.rb")

@@ -244,7 +244,7 @@ func verifyCask(path, version string, archives map[string]artifact) error {
 		if err != nil {
 			return err
 		}
-		url := "https://github.com/run-ai/karta/releases/download/v#{version}/karta_#{version}_darwin_" + arch + ".tar.gz"
+		url := "https://github.com/shaked-bouktus/karta/releases/download/v#{version}/karta_#{version}_darwin_" + arch + ".tar.gz"
 		if !strings.Contains(cask, `sha256 "`+digest+`"`) || !strings.Contains(cask, `url "`+url+`"`) {
 			return fmt.Errorf("homebrew Cask does not use the URL and checksum for %s", name)
 		}

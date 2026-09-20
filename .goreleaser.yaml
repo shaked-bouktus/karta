@@ -60,17 +60,18 @@ homebrew_casks:
     binaries:
       - karta
     url:
-      template: https://github.com/run-ai/karta/releases/download/v{{ .Version }}/{{ .ArtifactName }}
+      template: https://github.com/shaked-bouktus/karta/releases/download/v{{ .Version }}/{{ .ArtifactName }}
     repository:
-      owner: run-ai
-      name: homebrew-tap
+      owner: shaked-bouktus
+      name: homebrew-tap-canary
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: https://github.com/run-ai/karta
+    skip_upload: true
+    homepage: https://github.com/shaked-bouktus/karta
     description: Workload-aware visibility for any Kubernetes workload type
 
 release:
   github:
-    owner: run-ai
+    owner: shaked-bouktus
     name: karta
   ids:
     - karta
