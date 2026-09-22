@@ -60,23 +60,24 @@ homebrew_casks:
     binaries:
       - karta
     url:
-      template: https://github.com/run-ai/karta/releases/download/v{{ .Version }}/{{ .ArtifactName }}
+      template: https://github.com/shaked-bouktus/karta/releases/download/v{{ .Version }}/{{ .ArtifactName }}
     repository:
-      owner: run-ai
-      name: homebrew-tap
+      owner: shaked-bouktus
+      name: homebrew-tap-canary
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    skip_upload: true
     custom_block: |
       postflight_steps do
         on_macos do
           run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/karta"]
         end
       end
-    homepage: https://github.com/run-ai/karta
+    homepage: https://github.com/shaked-bouktus/karta
     description: Workload-aware visibility for any Kubernetes workload type
 
 release:
   github:
-    owner: run-ai
+    owner: shaked-bouktus
     name: karta
   ids:
     - karta

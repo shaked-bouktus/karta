@@ -9,4 +9,4 @@ use (
 	./operator
 )
 
-replace github.com/dsx-ai-factory/workload-map v0.2.3 => .
+replace github.com/dsx-ai-factory/workload-map v0.2.1000 => .
