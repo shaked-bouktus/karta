@@ -29,8 +29,8 @@ var _ = Describe("Versioned Go installation", func() {
 			"pkg/version/version.go": versionSource,
 		})
 		writeProxyModule(proxy, "github.com/dsx-ai-factory/workload-map/cli", installTestVersion, map[string][]byte{
-			"go.mod":  []byte("module github.com/dsx-ai-factory/workload-map/cli\n\ngo 1.26.3\n\nrequire github.com/dsx-ai-factory/workload-map v1.2.3\n"),
-			"main.go": []byte("package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/dsx-ai-factory/workload-map/pkg/version\"\n)\n\nfunc main() { fmt.Print(version.String()) }\n"),
+			"go.mod":            []byte("module github.com/dsx-ai-factory/workload-map/cli\n\ngo 1.26.3\n\nrequire github.com/dsx-ai-factory/workload-map v1.2.3\n"),
+			"cmd/karta/main.go": []byte("package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/dsx-ai-factory/workload-map/pkg/version\"\n)\n\nfunc main() { fmt.Print(version.String()) }\n"),
 		})
 
 		binDir := filepath.Join(GinkgoT().TempDir(), "bin")
@@ -46,7 +46,7 @@ var _ = Describe("Versioned Go installation", func() {
 		goRootOutput, err := exec.Command("go", "env", "GOROOT").Output()
 		Expect(err).NotTo(HaveOccurred())
 		goBinary := filepath.Join(strings.TrimSpace(string(goRootOutput)), "bin", "go")
-		command := exec.Command(goBinary, "install", "github.com/dsx-ai-factory/workload-map/cli@"+installTestVersion)
+		command := exec.Command(goBinary, "install", "github.com/dsx-ai-factory/workload-map/cli/cmd/karta@"+installTestVersion)
 		command.Env = testEnvironment(os.Environ(),
 			"GOBIN="+binDir,
 			"GOMODCACHE="+moduleCache,
@@ -61,7 +61,7 @@ var _ = Describe("Versioned Go installation", func() {
 		output, err := command.CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), string(output))
 
-		binary := filepath.Join(binDir, "cli")
+		binary := filepath.Join(binDir, "karta")
 		if runtime.GOOS == "windows" {
 			binary += ".exe"
 		}

@@ -99,6 +99,23 @@ The structure in this view comes from Karta path expressions: the group, leader,
 
 ## Quick Start
 
+### Install the CLI
+
+Install the latest release from the Homebrew tap:
+
+```bash
+brew install run-ai/tap/karta
+```
+
+Or install the latest synchronized Go module release:
+
+```bash
+go install github.com/dsx-ai-factory/workload-map/cli/cmd/karta@latest
+```
+
+Both methods install the `karta` executable. Run `karta --version` to print the
+release version.
+
 ### Install the CRD
 
 ```bash

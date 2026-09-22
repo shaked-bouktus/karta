@@ -234,6 +234,17 @@ func verifyCask(path, version string, archives map[string]artifact) error {
 	if !strings.Contains(cask, `version "`+version+`"`) {
 		return fmt.Errorf("homebrew Cask does not declare version %s", version)
 	}
+	if strings.Contains(cask, "postflight do") {
+		return errors.New("homebrew Cask uses the deprecated postflight hook")
+	}
+	quarantineHook := `postflight_steps do
+    on_macos do
+      run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{staged_path}}/karta"]
+    end
+  end`
+	if !strings.Contains(cask, quarantineHook) {
+		return errors.New("homebrew Cask does not remove macOS quarantine from karta")
+	}
 	for _, arch := range []string{"amd64", "arm64"} {
 		name := "karta_" + version + "_darwin_" + arch + ".tar.gz"
 		item, ok := archives[name]

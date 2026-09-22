@@ -8,7 +8,7 @@ project_name: karta
 builds:
   - id: karta
     dir: cli
-    main: .
+    main: ./cmd/karta
     binary: karta
     goos:
       - linux
@@ -65,6 +65,12 @@ homebrew_casks:
       owner: run-ai
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/karta"]
+        end
+      end
     homepage: https://github.com/run-ai/karta
     description: Workload-aware visibility for any Kubernetes workload type
 

@@ -95,10 +95,10 @@ git push origin v1.2.3 cli/v1.2.3
 ```
 
 The root tag runs the coordinated workflow. The workflow builds and pushes the
-multi-architecture operator image from source, generates the two image locks,
-and publishes the Helm chart. GoReleaser then builds the four CLI archives and
-checksum manifest, updates the Homebrew Cask, and creates the GitHub Release.
-Finally, the workflow attaches the chart and locks to the existing release.
+multi-architecture operator image from source and publishes the Helm chart.
+GoReleaser then builds the four CLI archives and checksum manifest, updates the
+Homebrew Cask, and creates the GitHub Release. Finally, the workflow generates
+the two image locks and attaches the chart and locks to the existing release.
 
 The guarded publishing command used by the workflow is:
 
@@ -128,12 +128,13 @@ personal token.
 
 ## Recovery after a partial release
 
-If the GitHub Release succeeds but the Homebrew update fails, do not create a
-second release or move any tag. Correct the tap permission or repository state,
-verify that the existing release assets match `checksums.txt`, then rerun the
-same tagged workflow. GoReleaser replaces matching assets on that release and
-retries the Cask update. After it succeeds, confirm that the workflow attached
-the chart and both image locks to the same release.
+If a tagged workflow fails after publishing the operator image or Helm chart, do
+not create a second release or move any tag. Correct the failure and rerun the
+same workflow. A later attempt validates and reuses the chart and image from the
+first attempt instead of overwriting them. GoReleaser replaces matching assets
+on an existing GitHub Release and retries the Cask update. After it succeeds,
+confirm that the workflow attached the chart and both image locks to the same
+release and that the assets match `checksums.txt`.
 
 ## Release notes and breaking changes
 

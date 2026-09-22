@@ -324,7 +324,7 @@ release-snapshot: goreleaser release-validate ## Build the complete release loca
 	VERSION=$(VERSION) $(GORELEASER) release --snapshot --clean
 
 .PHONY: release-verify
-release-verify: ## Verify CLI archives, checksums, Cask, and versions in dist/
+release-verify: ## Verify CLI archives, checksums, Homebrew Cask, and versions in dist/
 	cd $(RELEASE_HELPER_DIR) && GOWORK=off go run . verify-artifacts --dist $(DIST_DIR) --version $(VERSION)
 
 .PHONY: release-validate

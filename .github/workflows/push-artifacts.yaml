@@ -60,12 +60,27 @@ jobs:
           echo "HELM_REGISTRY=$REGISTRY_NAMESPACE" >> $GITHUB_ENV
           echo "Publishing artifacts to $REGISTRY_NAMESPACE"
 
-      - name: Verify version not already published
+      - name: Check published version
+        id: publication
         run: |
-          if helm show chart oci://${{ env.HELM_REGISTRY }}/karta --version "$PACKAGE_VERSION" >/dev/null 2>&1; then
+          if ! chart=$(helm show chart oci://${{ env.HELM_REGISTRY }}/karta --version "$PACKAGE_VERSION" 2>/dev/null); then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${GITHUB_RUN_ATTEMPT:-1}" == "1" ]]; then
             echo "Version $PACKAGE_VERSION already published to ${{ env.HELM_REGISTRY }}/karta." >&2
             exit 1
           fi
+          printf '%s\n' "$chart" | grep -Fxq "version: $PACKAGE_VERSION" || {
+            echo "Published chart version does not match $PACKAGE_VERSION." >&2
+            exit 1
+          }
+          printf '%s\n' "$chart" | grep -Fxq "appVersion: $PACKAGE_VERSION" || {
+            echo "Published chart appVersion does not match $PACKAGE_VERSION." >&2
+            exit 1
+          }
+          echo "published=true" >> "$GITHUB_OUTPUT"
+          echo "Reusing version $PACKAGE_VERSION from the previous workflow attempt."
 
       - name: Lint and validate helm chart
         run: make helm-lint helm-validate
@@ -89,15 +104,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push operator image
+        if: steps.publication.outputs.published != 'true'
         run: |
           make operator-image-buildx-push VERSION="$PACKAGE_VERSION" IMAGE_REGISTRY="$REGISTRY_NAMESPACE"
-
-      - name: Generate air-gap image lock
-        if: github.ref_type == 'tag'
-        run: |
-          # After the operator push so its tag resolves; PACKAGE_VERSION has no leading v.
-          make image-lock VERSION="$PACKAGE_VERSION" \
-            IMAGE_LOCK_SET="image.repository=$REGISTRY_NAMESPACE/karta-operator"
 
       - name: Build helm chart
         run: |
@@ -106,6 +115,7 @@ jobs:
             --app-version "$PACKAGE_VERSION"
 
       - name: Push Helm Chart
+        if: steps.publication.outputs.published != 'true'
         run: |
           helm push ./charts/karta-$PACKAGE_VERSION.tgz oci://${{ env.HELM_REGISTRY }}
 
@@ -143,6 +153,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token || secrets.HOMEBREW_TAP_TOKEN }}
         run: make release VERSION="$PACKAGE_VERSION"
+
+      - name: Generate air-gap image lock
+        if: github.ref_type == 'tag'
+        run: |
+          # Run after GoReleaser because `release --clean` recreates dist/.
+          make image-lock VERSION="$PACKAGE_VERSION" \
+            IMAGE_LOCK_SET="image.repository=$REGISTRY_NAMESPACE/karta-operator"
 
       - name: Attach chart and image locks to the GoReleaser release
         if: github.ref_type == 'tag'

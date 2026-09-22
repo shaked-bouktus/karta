@@ -136,6 +136,10 @@ var _ = Describe("Release validation", func() {
 			archives := map[string]artifact{}
 			var cask strings.Builder
 			cask.WriteString("version \"1.2.3\"\n")
+			quarantineHook := "postflight_steps do\n    on_macos do\n      " +
+				"run \"/usr/bin/xattr\", args: [\"-dr\", \"com.apple.quarantine\", \"{{staged_path}}/karta\"]\n" +
+				"    end\n  end\n"
+			cask.WriteString(quarantineHook)
 			for _, arch := range []string{"amd64", "arm64"} {
 				name := "karta_1.2.3_darwin_" + arch + ".tar.gz"
 				path := filepath.Join(directory, name)
@@ -150,7 +154,16 @@ var _ = Describe("Release validation", func() {
 			Expect(os.WriteFile(path, []byte(cask.String()), 0o644)).To(Succeed())
 			Expect(verifyCask(path, "1.2.3", archives)).To(Succeed())
 
-			Expect(os.WriteFile(path, []byte("version \"1.2.3\"\n"), 0o644)).To(Succeed())
+			withoutHook := strings.Replace(cask.String(), quarantineHook, "", 1)
+			Expect(os.WriteFile(path, []byte(withoutHook), 0o644)).To(Succeed())
+			Expect(verifyCask(path, "1.2.3", archives)).To(MatchError(ContainSubstring("does not remove macOS quarantine")))
+
+			deprecatedHook := strings.Replace(cask.String(), "postflight_steps do", "postflight do", 1)
+			Expect(os.WriteFile(path, []byte(deprecatedHook), 0o644)).To(Succeed())
+			Expect(verifyCask(path, "1.2.3", archives)).To(MatchError(ContainSubstring("deprecated postflight hook")))
+
+			withoutArchives := strings.SplitN(cask.String(), "sha256", 2)[0]
+			Expect(os.WriteFile(path, []byte(withoutArchives), 0o644)).To(Succeed())
 			Expect(verifyCask(path, "1.2.3", archives)).To(MatchError(ContainSubstring("does not use the URL and checksum")))
 		})
 	})
