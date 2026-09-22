@@ -64,6 +64,10 @@ and writes them with plain `GetPodTemplateSpec` / `UpdatePodTemplateSpec` calls.
 - [kind](https://kind.sigs.k8s.io/), `kubectl`, `docker`
 - Go (only to build the image)
 
+The repository workspace contains only the synchronized product modules. Use
+`GOWORK=off` for any Go command run directly inside this standalone example.
+The example Dockerfile already sets it for its build.
+
 ## Run it on Kind
 
 From the repository root.
