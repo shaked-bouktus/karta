@@ -8,8 +8,8 @@ project_name: karta
 builds:
   - id: karta
     dir: cli
-    main: ./cmd/karta
-    binary: karta
+    main: ./cmd/kli
+    binary: kli
     goos:
       - linux
       - darwin
@@ -53,31 +53,35 @@ source:
 sboms:
   - disable: true
 
+# The tap is this repository itself, so there is no separate homebrew-* repo to
+# maintain. Users tap it by URL once, then install by bare token:
+#   brew tap dsx-ai-factory/kli https://github.com/dsx-ai-factory/workload-map
+#   brew install kli
 homebrew_casks:
-  - name: karta
+  - name: kli
     ids:
       - karta
     binaries:
-      - karta
+      - kli
     url:
-      template: https://github.com/run-ai/karta/releases/download/v{{ .Version }}/{{ .ArtifactName }}
+      template: https://github.com/dsx-ai-factory/workload-map/releases/download/v{{ .Version }}/{{ .ArtifactName }}
     repository:
-      owner: run-ai
-      name: homebrew-tap
+      owner: dsx-ai-factory
+      name: workload-map
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     custom_block: |
       postflight_steps do
         on_macos do
-          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/karta"]
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/kli"]
         end
       end
-    homepage: https://github.com/run-ai/karta
+    homepage: https://github.com/dsx-ai-factory/workload-map
     description: Workload-aware visibility for any Kubernetes workload type
 
 release:
   github:
-    owner: run-ai
-    name: karta
+    owner: dsx-ai-factory
+    name: workload-map
   ids:
     - karta
   replace_existing_artifacts: true

@@ -96,9 +96,10 @@ git push origin v1.2.3 cli/v1.2.3
 
 The root tag runs the coordinated workflow. The workflow builds and pushes the
 multi-architecture operator image from source and publishes the Helm chart.
-GoReleaser then builds the four CLI archives and checksum manifest, updates the
-Homebrew Cask, and creates the GitHub Release. Finally, the workflow generates
-the two image locks and attaches the chart and locks to the existing release.
+GoReleaser then builds the four CLI archives and checksum manifest, commits the
+Homebrew Cask to this repository, and creates the GitHub Release. Finally, the
+workflow generates the two image locks and attaches the chart and locks to the
+existing release.
 
 The guarded publishing command used by the workflow is:
 
@@ -112,19 +113,30 @@ credentials are present. It must normally run only in the release workflow.
 
 ## Release credentials
 
-The normal workflow `GITHUB_TOKEN` is used only for the Karta GitHub Release,
-GHCR packages, and release attachments in this repository.
+The normal workflow `GITHUB_TOKEN` is used for the Karta GitHub Release, GHCR
+packages, release attachments, and the Homebrew Cask commit. The release needs
+no other credential.
 
-The preferred Homebrew credential is a GitHub App installed only on
-`run-ai/homebrew-tap` with `Contents: Read and write`. Configure:
+The Homebrew tap is this repository rather than a separate `homebrew-*` one, so
+GoReleaser commits `Casks/kli.rb` to the default branch on every tagged release.
+The workflow passes its own `GITHUB_TOKEN` as `HOMEBREW_TAP_TOKEN`, which the
+job-level `permissions: contents: write` grants. Branch protection on the
+default branch must allow that push, or the Cask step fails after the image and
+chart are already published.
 
-- Repository variable `HOMEBREW_TAP_APP_CLIENT_ID`.
-- Repository secret `HOMEBREW_TAP_APP_PRIVATE_KEY`.
+Users tap the repository by URL, because the one-argument form of `brew tap`
+only resolves repositories named `homebrew-<name>`, and trust it, because
+Homebrew refuses to load casks from an unofficial tap until it is trusted:
 
-The documented fallback is the `HOMEBREW_TAP_TOKEN` repository secret. It must
-be an organization-owned fine-grained token restricted to `run-ai/homebrew-tap`
-with `Contents: Read and write`. Do not use a classic token or an individual's
-personal token.
+```bash
+brew tap dsx-ai-factory/kli https://github.com/dsx-ai-factory/workload-map
+brew trust --cask dsx-ai-factory/kli/kli
+brew install kli
+```
+
+Moving to a dedicated `homebrew-<name>` repository later would drop the URL from
+the first command. It would not drop the trust step, which applies to every
+unofficial tap.
 
 ## Recovery after a partial release
 
@@ -132,7 +144,7 @@ If a tagged workflow fails after publishing the operator image or Helm chart, do
 not create a second release or move any tag. Correct the failure and rerun the
 same workflow. A later attempt validates and reuses the chart and image from the
 first attempt instead of overwriting them. GoReleaser replaces matching assets
-on an existing GitHub Release and retries the Cask update. After it succeeds,
+on an existing GitHub Release and retries the Cask commit. After it succeeds,
 confirm that the workflow attached the chart and both image locks to the same
 release and that the assets match `checksums.txt`.
 

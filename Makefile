@@ -212,12 +212,12 @@ test-cli: ## Run the CLI unit tests
 
 .PHONY: build-cli
 build-cli: goreleaser $(LOCALBIN) ## Build the karta CLI binary into bin/
-	VERSION=$(VERSION) $(GORELEASER) build --snapshot --clean --single-target --id karta --output $(LOCALBIN)/karta
+	VERSION=$(VERSION) $(GORELEASER) build --snapshot --clean --single-target --id karta --output $(LOCALBIN)/kli
 
 .PHONY: cli-verify-version
 cli-verify-version: build-cli ## Assert the CLI binary reports the stamped version
 	@set -e; \
-	out="$$($(LOCALBIN)/karta --version)"; \
+	out="$$($(LOCALBIN)/kli --version)"; \
 	echo "$$out"; \
 	[ "$$out" = "$(VERSION)" ] || { \
 		echo "version mismatch: got '$$out', want '$(VERSION)'" >&2; exit 1; }
