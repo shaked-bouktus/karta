@@ -208,7 +208,7 @@ func runVerifyArtifacts(args []string) error {
 	if err := verifyChecksums(filepath.Join(*dist, "checksums.txt"), archives); err != nil {
 		return err
 	}
-	if err := verifyCask(filepath.Join(*dist, "homebrew", "Casks", "karta.rb"), *version, archives); err != nil {
+	if err := verifyCask(filepath.Join(*dist, "homebrew", "Casks", "kli.rb"), *version, archives); err != nil {
 		return err
 	}
 	verified, skipped, err := verifyHostVersions(artifacts, *version)
@@ -239,11 +239,11 @@ func verifyCask(path, version string, archives map[string]artifact) error {
 	}
 	quarantineHook := `postflight_steps do
     on_macos do
-      run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{staged_path}}/karta"]
+      run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{staged_path}}/kli"]
     end
   end`
 	if !strings.Contains(cask, quarantineHook) {
-		return errors.New("homebrew Cask does not remove macOS quarantine from karta")
+		return errors.New("homebrew Cask does not remove macOS quarantine from kli")
 	}
 	for _, arch := range []string{"amd64", "arm64"} {
 		name := "karta_" + version + "_darwin_" + arch + ".tar.gz"
@@ -255,7 +255,7 @@ func verifyCask(path, version string, archives map[string]artifact) error {
 		if err != nil {
 			return err
 		}
-		url := "https://github.com/run-ai/karta/releases/download/v#{version}/karta_#{version}_darwin_" + arch + ".tar.gz"
+		url := "https://github.com/dsx-ai-factory/workload-map/releases/download/v#{version}/karta_#{version}_darwin_" + arch + ".tar.gz"
 		if !strings.Contains(cask, `sha256 "`+digest+`"`) || !strings.Contains(cask, `url "`+url+`"`) {
 			return fmt.Errorf("homebrew Cask does not use the URL and checksum for %s", name)
 		}
@@ -296,7 +296,7 @@ func verifyArchive(path string) error {
 			entries[header.Name] = struct{}{}
 		}
 	}
-	want := []string{"LICENSE", "NOTICE", "README.md", "THIRD_PARTY_LICENSES", "karta"}
+	want := []string{"LICENSE", "NOTICE", "README.md", "THIRD_PARTY_LICENSES", "kli"}
 	if len(entries) != len(want) {
 		return fmt.Errorf("archive contains %v, want %v", sortedKeys(entries), want)
 	}

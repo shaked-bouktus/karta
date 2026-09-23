@@ -95,13 +95,13 @@ var _ = Describe("Release validation", func() {
 	Describe("artifact contents", func() {
 		It("accepts the exact CLI archive surface", func() {
 			path := filepath.Join(GinkgoT().TempDir(), "karta.tar.gz")
-			writeArchive(path, []string{"karta", "LICENSE", "NOTICE", "README.md", "THIRD_PARTY_LICENSES"})
+			writeArchive(path, []string{"kli", "LICENSE", "NOTICE", "README.md", "THIRD_PARTY_LICENSES"})
 			Expect(verifyArchive(path)).To(Succeed())
 		})
 
 		It("rejects an archive without NOTICE", func() {
 			path := filepath.Join(GinkgoT().TempDir(), "karta.tar.gz")
-			writeArchive(path, []string{"karta", "LICENSE", "README.md", "THIRD_PARTY_LICENSES"})
+			writeArchive(path, []string{"kli", "LICENSE", "README.md", "THIRD_PARTY_LICENSES"})
 			Expect(verifyArchive(path)).To(MatchError(ContainSubstring("archive contains")))
 		})
 
@@ -137,7 +137,7 @@ var _ = Describe("Release validation", func() {
 			var cask strings.Builder
 			cask.WriteString("version \"1.2.3\"\n")
 			quarantineHook := "postflight_steps do\n    on_macos do\n      " +
-				"run \"/usr/bin/xattr\", args: [\"-dr\", \"com.apple.quarantine\", \"{{staged_path}}/karta\"]\n" +
+				"run \"/usr/bin/xattr\", args: [\"-dr\", \"com.apple.quarantine\", \"{{staged_path}}/kli\"]\n" +
 				"    end\n  end\n"
 			cask.WriteString(quarantineHook)
 			for _, arch := range []string{"amd64", "arm64"} {
@@ -147,10 +147,10 @@ var _ = Describe("Release validation", func() {
 				digest, err := fileSHA256(path)
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Fprintf(&cask, "sha256 \"%s\"\n", digest)
-				fmt.Fprintf(&cask, "url \"https://github.com/run-ai/karta/releases/download/v#{version}/karta_#{version}_darwin_%s.tar.gz\"\n", arch)
+				fmt.Fprintf(&cask, "url \"https://github.com/dsx-ai-factory/workload-map/releases/download/v#{version}/karta_#{version}_darwin_%s.tar.gz\"\n", arch)
 				archives[name] = artifact{Name: name, Path: path}
 			}
-			path := filepath.Join(directory, "karta.rb")
+			path := filepath.Join(directory, "kli.rb")
 			Expect(os.WriteFile(path, []byte(cask.String()), 0o644)).To(Succeed())
 			Expect(verifyCask(path, "1.2.3", archives)).To(Succeed())
 

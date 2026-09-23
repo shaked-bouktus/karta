@@ -101,20 +101,31 @@ The structure in this view comes from Karta path expressions: the group, leader,
 
 ### Install the CLI
 
-Install the latest release from the Homebrew tap:
+Install the latest release with Homebrew. This repository is its own tap, so
+point Homebrew at it by URL, trust it, then install by name:
 
 ```bash
-brew install run-ai/tap/karta
+brew tap dsx-ai-factory/kli https://github.com/dsx-ai-factory/workload-map
+brew trust --cask dsx-ai-factory/kli/kli
+brew install kli
 ```
+
+The URL is required because the short form of `brew tap` only resolves
+repositories named `homebrew-<name>`. The trust step is required because
+Homebrew refuses to load casks from any unofficial tap until it is trusted.
 
 Or install the latest synchronized Go module release:
 
 ```bash
-go install github.com/dsx-ai-factory/workload-map/cli/cmd/karta@latest
+go install github.com/dsx-ai-factory/workload-map/cli/cmd/kli@latest
 ```
 
-Both methods install the `karta` executable. Run `karta --version` to print the
+Both methods install the `kli` executable. Run `kli --version` to print the
 release version.
+
+Each release also publishes prebuilt `kli` archives for Linux and macOS on
+amd64 and arm64, with a `checksums.txt` manifest, on the
+[GitHub Releases page](https://github.com/dsx-ai-factory/workload-map/releases).
 
 ### Install the CRD
 
