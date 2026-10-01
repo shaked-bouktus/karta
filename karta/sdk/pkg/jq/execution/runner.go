@@ -6,6 +6,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -85,6 +86,48 @@ func (r *runner) AssignZip(ctx context.Context, expression string, values []any)
 	`, expression)
 
 	return r.assignWithExpression(ctx, updateExpression, []string{"$val"}, []any{values})
+}
+
+func (r *runner) ResolvePaths(ctx context.Context, expression string) ([][]any, error) {
+	results, err := r.Evaluate(ctx, fmt.Sprintf(`[path(%s)]`, expression))
+	if err != nil {
+		var execErr *JQExecutionError
+		if errors.As(err, &execErr) {
+			return nil, &PathNotWritableError{Expression: expression, Err: execErr.Err}
+		}
+		return nil, err
+	}
+	if len(results) != 1 {
+		return nil, &PathNotWritableError{Expression: expression, Err: fmt.Errorf("expected one path array, got %d results", len(results))}
+	}
+	rawPaths, ok := results[0].([]any)
+	if !ok {
+		return nil, &PathNotWritableError{Expression: expression, Err: fmt.Errorf("path() returned %T, not an array", results[0])}
+	}
+	paths := make([][]any, len(rawPaths))
+	for i, rawPath := range rawPaths {
+		path, ok := rawPath.([]any)
+		if !ok {
+			return nil, &PathNotWritableError{Expression: expression, Err: fmt.Errorf("path %d is %T, not an array", i, rawPath)}
+		}
+		paths[i] = path
+	}
+	return paths, nil
+}
+
+func (r *runner) SpliceValues(ctx context.Context, paths [][]any, values []any) error {
+	if len(paths) != len(values) {
+		return fmt.Errorf("paths and values length mismatch: %d paths but %d values", len(paths), len(values))
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	anyPaths := make([]any, len(paths))
+	for i, p := range paths {
+		anyPaths[i] = p
+	}
+	spliceExpression := `reduce range($paths | length) as $i (.; setpath($paths[$i]; $vals[$i]))`
+	return r.assignWithExpression(ctx, spliceExpression, []string{"$paths", "$vals"}, []any{anyPaths, values})
 }
 
 func (r *runner) assignWithExpression(ctx context.Context, updateExpression string, variables []string, values []any) error {

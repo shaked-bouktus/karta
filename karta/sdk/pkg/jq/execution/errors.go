@@ -31,6 +31,21 @@ func (e *JQCompileError) Unwrap() error {
 	return e.Err
 }
 
+// PathNotWritableError reports an expression that computes a value instead of
+// addressing locations in the object, so nothing can be written through it.
+type PathNotWritableError struct {
+	Expression string
+	Err        error
+}
+
+func (e *PathNotWritableError) Error() string {
+	return fmt.Sprintf("expression '%s' does not address writable locations: %v", e.Expression, e.Err)
+}
+
+func (e *PathNotWritableError) Unwrap() error {
+	return e.Err
+}
+
 type JQExecutionError struct {
 	Expression string
 	Err        error

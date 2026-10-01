@@ -393,7 +393,8 @@ func (a *Accessor) UpdatePodTemplateSpec(ctx context.Context, definition v1alpha
 		return DefinitionNotFoundError(fmt.Sprintf("component %s does not have pod template spec definition", definition.Name))
 	}
 
-	return a.assign(ctx, definition, *definition.SpecDefinition.PodTemplateSpecPath, lo.Map(podTemplateSpecs, func(podTemplateSpec corev1.PodTemplateSpec, _ int) any { return podTemplateSpec }))
+	values := lo.Map(podTemplateSpecs, func(podTemplateSpec corev1.PodTemplateSpec, _ int) any { return podTemplateSpec })
+	return a.mergeWrite(ctx, definition, *definition.SpecDefinition.PodTemplateSpecPath, values, corev1.PodTemplateSpec{})
 }
 
 func (a *Accessor) UpdatePodSpec(ctx context.Context, definition v1alpha1.ComponentDefinition, podSpecs []corev1.PodSpec) error {
@@ -405,7 +406,8 @@ func (a *Accessor) UpdatePodSpec(ctx context.Context, definition v1alpha1.Compon
 		return DefinitionNotFoundError(fmt.Sprintf("component %s does not have pod spec definition", definition.Name))
 	}
 
-	return a.assign(ctx, definition, *definition.SpecDefinition.PodSpecPath, lo.Map(podSpecs, func(podSpec corev1.PodSpec, _ int) any { return podSpec }))
+	values := lo.Map(podSpecs, func(podSpec corev1.PodSpec, _ int) any { return podSpec })
+	return a.mergeWrite(ctx, definition, *definition.SpecDefinition.PodSpecPath, values, corev1.PodSpec{})
 }
 
 func (a *Accessor) UpdatePodMetadata(ctx context.Context, definition v1alpha1.ComponentDefinition, podMetadata []metav1.ObjectMeta) error {
@@ -416,7 +418,8 @@ func (a *Accessor) UpdatePodMetadata(ctx context.Context, definition v1alpha1.Co
 	if definition.SpecDefinition.MetadataPath == nil {
 		return DefinitionNotFoundError(fmt.Sprintf("component %s does not have pod metadata definition", definition.Name))
 	}
-	return a.assign(ctx, definition, *definition.SpecDefinition.MetadataPath, lo.Map(podMetadata, func(podMetadata metav1.ObjectMeta, _ int) any { return podMetadata }))
+	values := lo.Map(podMetadata, func(podMetadata metav1.ObjectMeta, _ int) any { return podMetadata })
+	return a.mergeWrite(ctx, definition, *definition.SpecDefinition.MetadataPath, values, metav1.ObjectMeta{})
 }
 
 func (a *Accessor) UpdateFragmentedPodSpec(ctx context.Context, definition v1alpha1.ComponentDefinition, fragmentedPodSpecs []FragmentedPodSpec) error {
@@ -430,101 +433,116 @@ func (a *Accessor) UpdateFragmentedPodSpec(ctx context.Context, definition v1alp
 
 	fragmentedDef := definition.SpecDefinition.FragmentedPodSpecDefinition
 
+	// All fragments stage into one plan: they diff against the same snapshot
+	// and commit together, so a refused fragment leaves the object untouched.
+	plan := a.newWritePlan()
+
 	// String fields
-	if err := a.updateStringField(ctx, definition, fragmentedDef.SchedulerNamePath, fragmentedPodSpecs, func(s FragmentedPodSpec) string { return s.SchedulerName }); err != nil {
+	if err := updateStringField(ctx, plan, definition, fragmentedDef.SchedulerNamePath, fragmentedPodSpecs, func(s FragmentedPodSpec) string { return s.SchedulerName }); err != nil {
 		return fmt.Errorf("failed to update scheduler name: %w", err)
 	}
-	if err := a.updateStringField(ctx, definition, fragmentedDef.PriorityClassNamePath, fragmentedPodSpecs, func(s FragmentedPodSpec) string { return s.PriorityClassName }); err != nil {
+	if err := updateStringField(ctx, plan, definition, fragmentedDef.PriorityClassNamePath, fragmentedPodSpecs, func(s FragmentedPodSpec) string { return s.PriorityClassName }); err != nil {
 		return fmt.Errorf("failed to update priority class name: %w", err)
 	}
-	if err := a.updateStringField(ctx, definition, fragmentedDef.ImagePath, fragmentedPodSpecs, func(s FragmentedPodSpec) string { return s.Image }); err != nil {
+	if err := updateStringField(ctx, plan, definition, fragmentedDef.ImagePath, fragmentedPodSpecs, func(s FragmentedPodSpec) string { return s.Image }); err != nil {
 		return fmt.Errorf("failed to update image: %w", err)
 	}
 
 	// Map fields
-	if err := updateMapField(a, ctx, definition, fragmentedDef.LabelsPath, fragmentedPodSpecs, func(s FragmentedPodSpec) map[string]string { return s.Labels }); err != nil {
+	if err := updateMapField(ctx, plan, definition, fragmentedDef.LabelsPath, fragmentedPodSpecs, func(s FragmentedPodSpec) map[string]string { return s.Labels }); err != nil {
 		return fmt.Errorf("failed to update labels: %w", err)
 	}
-	if err := updateMapField(a, ctx, definition, fragmentedDef.AnnotationsPath, fragmentedPodSpecs, func(s FragmentedPodSpec) map[string]string { return s.Annotations }); err != nil {
+	if err := updateMapField(ctx, plan, definition, fragmentedDef.AnnotationsPath, fragmentedPodSpecs, func(s FragmentedPodSpec) map[string]string { return s.Annotations }); err != nil {
 		return fmt.Errorf("failed to update annotations: %w", err)
 	}
 
 	// Pointer fields
-	if err := updateStructPointerField(a, ctx, definition, fragmentedDef.ResourcesPath, fragmentedPodSpecs, func(s FragmentedPodSpec) *corev1.ResourceRequirements { return s.Resources }); err != nil {
+	if err := updateStructPointerField(ctx, plan, definition, fragmentedDef.ResourcesPath, fragmentedPodSpecs, func(s FragmentedPodSpec) *corev1.ResourceRequirements { return s.Resources }); err != nil {
 		return fmt.Errorf("failed to update resources: %w", err)
 	}
-	if err := updateStructPointerField(a, ctx, definition, fragmentedDef.PodAffinityPath, fragmentedPodSpecs, func(s FragmentedPodSpec) *corev1.PodAffinity { return s.PodAffinity }); err != nil {
+	if err := updateStructPointerField(ctx, plan, definition, fragmentedDef.PodAffinityPath, fragmentedPodSpecs, func(s FragmentedPodSpec) *corev1.PodAffinity { return s.PodAffinity }); err != nil {
 		return fmt.Errorf("failed to update pod affinity: %w", err)
 	}
-	if err := updateStructPointerField(a, ctx, definition, fragmentedDef.NodeAffinityPath, fragmentedPodSpecs, func(s FragmentedPodSpec) *corev1.NodeAffinity { return s.NodeAffinity }); err != nil {
+	if err := updateStructPointerField(ctx, plan, definition, fragmentedDef.NodeAffinityPath, fragmentedPodSpecs, func(s FragmentedPodSpec) *corev1.NodeAffinity { return s.NodeAffinity }); err != nil {
 		return fmt.Errorf("failed to update node affinity: %w", err)
 	}
-	if err := updateStructPointerField(a, ctx, definition, fragmentedDef.ContainerPath, fragmentedPodSpecs, func(s FragmentedPodSpec) *corev1.Container { return s.Container }); err != nil {
+	if err := updateStructPointerField(ctx, plan, definition, fragmentedDef.ContainerPath, fragmentedPodSpecs, func(s FragmentedPodSpec) *corev1.Container { return s.Container }); err != nil {
 		return fmt.Errorf("failed to update container: %w", err)
 	}
 
-	// Slice fields
-	if err := updateSliceField(a, ctx, definition, fragmentedDef.ResourceClaimsPath, fragmentedPodSpecs, func(s FragmentedPodSpec) []corev1.PodResourceClaim { return s.ResourceClaims }); err != nil {
+	// Slice fields merge per named element, so one container edit patches one
+	// element instead of replacing the list.
+	if err := updateSliceField(ctx, plan, definition, fragmentedDef.ResourceClaimsPath, fragmentedPodSpecs,
+		func(s FragmentedPodSpec) []corev1.PodResourceClaim { return s.ResourceClaims },
+		func(v []corev1.PodResourceClaim) any { return resourceClaimsValue(v) }); err != nil {
 		return fmt.Errorf("failed to update resource claims: %w", err)
 	}
-	if err := updateSliceField(a, ctx, definition, fragmentedDef.ContainersPath, fragmentedPodSpecs, func(s FragmentedPodSpec) []corev1.Container { return s.Containers }); err != nil {
+	if err := updateSliceField(ctx, plan, definition, fragmentedDef.ContainersPath, fragmentedPodSpecs,
+		func(s FragmentedPodSpec) []corev1.Container { return s.Containers },
+		func(v []corev1.Container) any { return containersValue(v) }); err != nil {
 		return fmt.Errorf("failed to update containers: %w", err)
 	}
 
-	return nil
+	return plan.commit(ctx)
 }
 
-func (a *Accessor) updateField(ctx context.Context, def v1alpha1.ComponentDefinition, path *string, values []any, isEmpty func(any) bool) error {
-	if path != nil {
-		// Skip assignment if all values are empty/nil to avoid writing null
-		// into the JSON.
-		allEmpty := true
-		for _, v := range values {
-			if !isEmpty(v) {
-				allEmpty = false
-				break
-			}
-		}
-		if allEmpty {
-			return nil
-		}
-		return a.assign(ctx, def, *path, values)
-	}
-	for _, v := range values {
-		if !isEmpty(v) {
+// stageField stages one fragment kind across instances. A nil value skips its
+// instance; a non-nil empty value is an explicit clear. Instances that end up
+// equal to the stored state are skipped by the merge, so a fragment nobody set
+// never touches the object (and never resolves a formula path).
+func stageField(ctx context.Context, plan *writePlan, def v1alpha1.ComponentDefinition, path *string, values []any, schema any) error {
+	set := lo.CountBy(values, func(v any) bool { return v != nil })
+	if path == nil {
+		if set > 0 {
 			return fmt.Errorf("path is not defined and values are not empty")
 		}
+		return nil
 	}
-	return nil
-}
-
-func (a *Accessor) updateStringField(ctx context.Context, def v1alpha1.ComponentDefinition, path *string, specs []FragmentedPodSpec, getter func(FragmentedPodSpec) string) error {
-	values := lo.Map(specs, func(s FragmentedPodSpec, _ int) any { return getter(s) })
-	return a.updateField(ctx, def, path, values, func(v any) bool { return v.(string) == "" })
-}
-
-func updateMapField[K comparable, V any](a *Accessor, ctx context.Context, def v1alpha1.ComponentDefinition, path *string, specs []FragmentedPodSpec, getter func(FragmentedPodSpec) map[K]V) error {
-	values := lo.Map(specs, func(s FragmentedPodSpec, _ int) any { return getter(s) })
-	return a.updateField(ctx, def, path, values, func(v any) bool { return len(v.(map[K]V)) == 0 })
-}
-
-func updateStructPointerField[T any](a *Accessor, ctx context.Context, def v1alpha1.ComponentDefinition, path *string, specs []FragmentedPodSpec, getter func(FragmentedPodSpec) *T) error {
-	values := lo.Map(specs, func(s FragmentedPodSpec, _ int) any { return getter(s) })
-	return a.updateField(ctx, def, path, values, func(v any) bool { return v.(*T) == nil })
-}
-
-func updateSliceField[T any](a *Accessor, ctx context.Context, def v1alpha1.ComponentDefinition, path *string, specs []FragmentedPodSpec, getter func(FragmentedPodSpec) []T) error {
-	values := lo.Map(specs, func(s FragmentedPodSpec, _ int) any { return getter(s) })
-	return a.updateField(ctx, def, path, values, func(v any) bool { return len(v.([]T)) == 0 })
-}
-
-func (a *Accessor) assign(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, values []any) error {
-	// If instance id path is defined, use assign zip as the expression is an array expression (each coordinate per instance)
-	if definition.InstanceIdPath != nil {
-		return a.jqRunner.AssignZip(ctx, path, values)
-	} else {
-		return a.jqRunner.Assign(ctx, path, values[0])
+	if set == 0 {
+		return nil
 	}
+	return plan.stage(ctx, def, *path, values, schema)
+}
+
+func updateStringField(ctx context.Context, plan *writePlan, def v1alpha1.ComponentDefinition, path *string, specs []FragmentedPodSpec, getter func(FragmentedPodSpec) string) error {
+	values := lo.Map(specs, func(s FragmentedPodSpec, _ int) any {
+		if getter(s) == "" {
+			return nil
+		}
+		return getter(s)
+	})
+	return stageField(ctx, plan, def, path, values, nil)
+}
+
+func updateMapField[K comparable, V any](ctx context.Context, plan *writePlan, def v1alpha1.ComponentDefinition, path *string, specs []FragmentedPodSpec, getter func(FragmentedPodSpec) map[K]V) error {
+	values := lo.Map(specs, func(s FragmentedPodSpec, _ int) any {
+		if getter(s) == nil {
+			return nil
+		}
+		return getter(s)
+	})
+	return stageField(ctx, plan, def, path, values, nil)
+}
+
+func updateStructPointerField[T any](ctx context.Context, plan *writePlan, def v1alpha1.ComponentDefinition, path *string, specs []FragmentedPodSpec, getter func(FragmentedPodSpec) *T) error {
+	values := lo.Map(specs, func(s FragmentedPodSpec, _ int) any {
+		if getter(s) == nil {
+			return nil
+		}
+		return *getter(s)
+	})
+	var schema T
+	return stageField(ctx, plan, def, path, values, schema)
+}
+
+func updateSliceField[T any](ctx context.Context, plan *writePlan, def v1alpha1.ComponentDefinition, path *string, specs []FragmentedPodSpec, getter func(FragmentedPodSpec) []T, wrap func([]T) any) error {
+	values := lo.Map(specs, func(s FragmentedPodSpec, _ int) any {
+		if getter(s) == nil {
+			return nil
+		}
+		return wrap(getter(s))
+	})
+	return stageField(ctx, plan, def, path, values, nil)
 }
 
 func extract[T any](ctx context.Context, path *string, accessor execution.Runner, out *[]T) error {
