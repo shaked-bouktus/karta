@@ -66,8 +66,8 @@ sboms:
 
 release:
   github:
-    owner: dsx-ai-factory
-    name: workload-map
+    owner: shaked-bouktus
+    name: karta
   ids:
     - karta
   replace_existing_artifacts: true
