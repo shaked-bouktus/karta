@@ -100,7 +100,9 @@ tag cannot leave a `v1.2.3` tag that starts a release on its own.
 
 The `v1.2.3` tag runs the release workflow. Before it publishes anything, the
 workflow checks that both tags point to the tagged commit and that
-`karta/go.mod` carries no `replace` or `exclude` directive. It then builds and
+`karta/go.mod` carries no `replace` or `exclude` directive. It also runs `make
+release-snapshot` and `make release-verify`, a dry run of the CLI release that
+stops a release whose archives or cask would be wrong. It then builds and
 pushes the multi-architecture operator image from source and publishes the Helm
 chart. GoReleaser then builds the four CLI archives and checksum manifest,
 creates the GitHub Release, pushes the Homebrew cask to a `kli-cask-<version>`
@@ -168,6 +170,11 @@ The repository rules decide what else the App and the pull request need:
   squash merge, so a maintainer reviews and merges every cask update.
 
 ## Recovery after a partial release
+
+If the workflow fails before it publishes anything, nothing needs cleaning up.
+Rerun it if the failure was transient. If the fix needs a code change, for
+example a release snapshot that fails verification, merge the fix and release
+the next patch version, because the tags do not move.
 
 If a tagged workflow fails after publishing the operator image or Helm chart, do
 not create a second release or move any tag. Correct the failure and rerun the
