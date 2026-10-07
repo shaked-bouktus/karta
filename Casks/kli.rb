@@ -6,25 +6,25 @@ cask "kli" do
     end
   end
 
-  version "0.3.1002"
+  version "0.3.1003"
 
   on_macos do
     on_arm do
-      sha256 "a187bbbec5fc7272e7d5d43e66b87e8f89fd58a5de22e2b32f3b5ad61dd07fe7"
+      sha256 "4ce2fcf83527ea26aeade403093e5d42d2706e71a5efcfd5116a092647095913"
       url "https://github.com/shaked-bouktus/karta/releases/download/v#{version}/karta_#{version}_darwin_arm64.tar.gz"
     end
     on_intel do
-      sha256 "8689c96d266d2c054b5eafbc690658af1dc5023c3530de4f9911844b3b5630d9"
+      sha256 "86c7ba9d52fa1ee99d9c8a665cb912f0ab66933ede06f5db27995b805509ced5"
       url "https://github.com/shaked-bouktus/karta/releases/download/v#{version}/karta_#{version}_darwin_amd64.tar.gz"
     end
   end
   on_linux do
     on_arm do
-      sha256 "2c25505f25a91e48b7ab05e9ea4775b18fed551e8411c1ace956afcfc8dd0eaf"
+      sha256 "149d6c8150a4415263cb7659fad5c47c66f3cb09ebeabe27cdad497f963ef197"
       url "https://github.com/shaked-bouktus/karta/releases/download/v#{version}/karta_#{version}_linux_arm64.tar.gz"
     end
     on_intel do
-      sha256 "63de730f5aeb401d44865b15c936d65fa6a06d278519c8bc597d8261ef1b3e3b"
+      sha256 "f26aa04f6746165df836bb93a1d2ae74a79bed7b5332250f491f0a59a4087571"
       url "https://github.com/shaked-bouktus/karta/releases/download/v#{version}/karta_#{version}_linux_amd64.tar.gz"
     end
   end
