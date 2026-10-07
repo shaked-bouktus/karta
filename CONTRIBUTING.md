@@ -193,8 +193,8 @@ This is the same model used by [ai-dynamo/grove](https://github.com/ai-dynamo/gr
 
 A release tags the product as `vX.Y.Z` and the `karta/` library module as
 `karta/vX.Y.Z` on the same commit. The two-tag convention, local snapshot,
-guarded release command, credentials, and recovery procedure are documented in
-[RELEASE.md](RELEASE.md).
+guarded release command, Homebrew cask pull request, credentials, and recovery
+procedure are documented in [RELEASE.md](RELEASE.md).
 
 No `Chart.yaml` bump is needed. The release tag remains the source of truth for
 the published chart version and app version.
