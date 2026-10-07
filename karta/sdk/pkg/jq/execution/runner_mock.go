@@ -122,35 +122,6 @@ func (mr *MockAssignerMockRecorder) AssignZip(ctx, expression, values any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AssignZip", reflect.TypeOf((*MockAssigner)(nil).AssignZip), ctx, expression, values)
 }
 
-// ResolvePaths mocks base method.
-func (m *MockAssigner) ResolvePaths(ctx context.Context, expression string) ([][]any, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ResolvePaths", ctx, expression)
-	ret0, _ := ret[0].([][]any)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ResolvePaths indicates an expected call of ResolvePaths.
-func (mr *MockAssignerMockRecorder) ResolvePaths(ctx, expression any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolvePaths", reflect.TypeOf((*MockAssigner)(nil).ResolvePaths), ctx, expression)
-}
-
-// SpliceValues mocks base method.
-func (m *MockAssigner) SpliceValues(ctx context.Context, paths [][]any, values []any) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SpliceValues", ctx, paths, values)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SpliceValues indicates an expected call of SpliceValues.
-func (mr *MockAssignerMockRecorder) SpliceValues(ctx, paths, values any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SpliceValues", reflect.TypeOf((*MockAssigner)(nil).SpliceValues), ctx, paths, values)
-}
-
 // MockRunner is a mock of Runner interface.
 type MockRunner struct {
 	ctrl     *gomock.Controller
@@ -231,33 +202,4 @@ func (m *MockRunner) GetObject() (any, error) {
 func (mr *MockRunnerMockRecorder) GetObject() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetObject", reflect.TypeOf((*MockRunner)(nil).GetObject))
-}
-
-// ResolvePaths mocks base method.
-func (m *MockRunner) ResolvePaths(ctx context.Context, expression string) ([][]any, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ResolvePaths", ctx, expression)
-	ret0, _ := ret[0].([][]any)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ResolvePaths indicates an expected call of ResolvePaths.
-func (mr *MockRunnerMockRecorder) ResolvePaths(ctx, expression any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResolvePaths", reflect.TypeOf((*MockRunner)(nil).ResolvePaths), ctx, expression)
-}
-
-// SpliceValues mocks base method.
-func (m *MockRunner) SpliceValues(ctx context.Context, paths [][]any, values []any) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SpliceValues", ctx, paths, values)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SpliceValues indicates an expected call of SpliceValues.
-func (mr *MockRunnerMockRecorder) SpliceValues(ctx, paths, values any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SpliceValues", reflect.TypeOf((*MockRunner)(nil).SpliceValues), ctx, paths, values)
 }

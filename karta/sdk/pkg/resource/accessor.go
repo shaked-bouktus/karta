@@ -488,13 +488,13 @@ func (a *Accessor) UpdateFragmentedPodSpec(ctx context.Context, definition v1alp
 
 // stageField stages one fragment kind across instances. A nil value skips its
 // instance; a non-nil empty value is an explicit clear. Instances that end up
-// equal to the stored state are skipped by the merge, so a fragment nobody set
-// never touches the object (and never resolves a formula path).
+// equal to the stored state are skipped by the merge, and a fragment nobody set
+// never resolves its path.
 func stageField(ctx context.Context, plan *writePlan, def v1alpha1.ComponentDefinition, path *string, values []any, schema any) error {
 	set := lo.CountBy(values, func(v any) bool { return v != nil })
 	if path == nil {
 		if set > 0 {
-			return fmt.Errorf("path is not defined and values are not empty")
+			return DefinitionNotFoundError(fmt.Sprintf("component %s has no path for this fragment", def.Name))
 		}
 		return nil
 	}
