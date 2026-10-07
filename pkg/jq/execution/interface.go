@@ -19,11 +19,6 @@ type Assigner interface {
 	// AssignZip assigns an array of values to a given array expression using zip operation. e.g .items[] = ["a", "b", "c"]
 	// The length of the values array must match the length of the array expression.
 	AssignZip(ctx context.Context, expression string, values []any) error
-	// ResolvePaths resolves the concrete locations an expression addresses, without mutating.
-	// An expression that computes a value instead of addressing one fails with PathNotWritableError.
-	ResolvePaths(ctx context.Context, expression string) ([][]any, error)
-	// SpliceValues sets each resolved path to the corresponding value, committed as one atomic update.
-	SpliceValues(ctx context.Context, paths [][]any, values []any) error
 }
 
 type Runner interface {

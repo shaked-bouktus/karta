@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -223,13 +224,15 @@ var _ = Describe("write-back", func() {
 				Name:   "web-1",
 				Labels: map[string]string{"app": "web", "$patch": "delete"},
 			}})
-			var verification *WriteVerificationError
-			Expect(errors.As(err, &verification)).To(BeTrue(), "got: %v", err)
+			var refused *WriteError
+			Expect(errors.As(err, &refused)).To(BeTrue(), "got: %v", err)
+			Expect(err).To(MatchError(ErrDirectiveKey))
 		})
 
 		It("refuses a root write that would change the object's identity", func() {
 			current := map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "a"}}
 			merged := map[string]any{"kind": "Job", "metadata": map[string]any{"name": "a"}}
+			Expect(guardIdentity(current, merged)).To(MatchError(ErrIdentityChange))
 			Expect(guardIdentity(current, merged)).To(MatchError(ContainSubstring("kind")))
 
 			renamed := map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "b"}}
@@ -260,8 +263,9 @@ var _ = Describe("write-back", func() {
 				SchedulerName: "custom",
 				Labels:        map[string]string{"$patch": "delete"},
 			}})
-			var verification *WriteVerificationError
-			Expect(errors.As(err, &verification)).To(BeTrue(), "got: %v", err)
+			var refused *WriteError
+			Expect(errors.As(err, &refused)).To(BeTrue(), "got: %v", err)
+			Expect(err).To(MatchError(ErrDirectiveKey))
 
 			got, getErr := accessor.GetObject()
 			Expect(getErr).NotTo(HaveOccurred())
@@ -324,13 +328,18 @@ var _ = Describe("write-back", func() {
 			Expect(main["image"]).To(Equal("a:v2"))
 			Expect(main["vendorExtension"]).To(Equal("keep"))
 
-			// Both views changed at once is order-dependent: refused.
+			// Conflicting image values must be refused without committing either view.
+			before := asJSON(got)
 			err = accessor.UpdateFragmentedPodSpec(ctx, definition, []FragmentedPodSpec{{
 				Image:     "a:v3",
 				Container: &corev1.Container{Name: "main", Image: "a:v4"},
 			}})
-			var verification *WriteVerificationError
-			Expect(errors.As(err, &verification)).To(BeTrue(), "got: %v", err)
+			var refused *WriteError
+			Expect(errors.As(err, &refused)).To(BeTrue(), "got: %v", err)
+			Expect(err).To(MatchError(ErrConflictingWrites))
+			got, err = accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(before))
 		})
 
 		It("keeps unknown element fields when a retainKeys-tagged list entry changes", func() {
@@ -397,6 +406,533 @@ var _ = Describe("write-back", func() {
 			// projection, so the key goes away, exactly like the apiserver.
 			delete(want["metadata"].(map[string]any), "labels")
 			Expect(asJSON(got)).To(MatchJSON(asJSON(want)))
+		})
+	})
+
+	Context("resolving and splicing locations through the Runner interface", func() {
+		groupsObject := func() map[string]any {
+			return map[string]any{"spec": map[string]any{"groups": []any{
+				map[string]any{"name": "a", "replicas": float64(1)},
+				map[string]any{"name": "b", "replicas": float64(2)},
+			}}}
+		}
+
+		It("resolves one location per match, in document order", func() {
+			runner := execution.NewDefaultRunner(groupsObject())
+			Expect(resolveLocations(ctx, runner, ".spec.groups[].replicas")).To(Equal([][]any{
+				{"spec", "groups", 0, "replicas"},
+				{"spec", "groups", 1, "replicas"},
+			}))
+		})
+
+		It("resolves an absent trailing key so a write can create it", func() {
+			runner := execution.NewDefaultRunner(groupsObject())
+			Expect(resolveLocations(ctx, runner, ".spec.template")).To(Equal([][]any{{"spec", "template"}}))
+		})
+
+		It("refuses an expression that computes a value", func() {
+			runner := execution.NewDefaultRunner(groupsObject())
+			_, err := resolveLocations(ctx, runner, "(.spec.replicas // 1)")
+			var notWritable *execution.PathNotWritableError
+			Expect(errors.As(err, &notWritable)).To(BeTrue(), "got: %v", err)
+			Expect(notWritable.Expression).To(Equal("(.spec.replicas // 1)"))
+		})
+
+		It("splices every location in one update", func() {
+			runner := execution.NewDefaultRunner(groupsObject())
+			Expect(spliceLocations(ctx, runner,
+				[][]any{{"spec", "groups", 0, "replicas"}, {"spec", "groups", 1, "replicas"}},
+				[]any{float64(3), float64(4)})).To(Succeed())
+
+			got, err := runner.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(`{"spec":{"groups":[{"name":"a","replicas":3},{"name":"b","replicas":4}]}}`))
+		})
+
+		It("splices the root location and keys that need escaping", func() {
+			runner := execution.NewDefaultRunner(groupsObject())
+			Expect(spliceLocations(ctx, runner, [][]any{{}}, []any{map[string]any{"kind": "Pod"}})).To(Succeed())
+			Expect(spliceLocations(ctx, runner,
+				[][]any{{"metadata", "annotations", `quote" backslash\ $(X) example.com/key`}},
+				[]any{"v"})).To(Succeed())
+
+			got, err := runner.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(`{"kind":"Pod","metadata":{"annotations":{"quote\" backslash\\ $(X) example.com/key":"v"}}}`))
+		})
+
+		It("refuses the whole splice when one location cannot be set, without touching the object", func() {
+			runner := execution.NewDefaultRunner(groupsObject())
+			err := spliceLocations(ctx, runner,
+				[][]any{{"spec", "groups", 0, "replicas"}, {"spec", "groups", 0, "replicas", 0}},
+				[]any{float64(3), float64(4)})
+			Expect(err).To(HaveOccurred())
+
+			got, getErr := runner.GetObject()
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(groupsObject())))
+		})
+
+		It("refuses a count mismatch without touching the object", func() {
+			runner := execution.NewDefaultRunner(groupsObject())
+			Expect(spliceLocations(ctx, runner, [][]any{{"spec"}}, []any{1, 2})).To(MatchError(ContainSubstring("length mismatch")))
+
+			got, err := runner.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(groupsObject())))
+		})
+
+		It("writes nothing when there are no locations", func() {
+			runner := execution.NewDefaultRunner(groupsObject())
+			Expect(spliceLocations(ctx, runner, nil, nil)).To(Succeed())
+
+			got, err := runner.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(groupsObject())))
+		})
+	})
+
+	Context("refusal causes", func() {
+		It("refuses a stored fragment that does not fit the projection type", func() {
+			// A requests entry holding an object is not a resource.Quantity.
+			object := map[string]any{"spec": map[string]any{
+				"resources": map[string]any{"requests": map[string]any{"gpu": map[string]any{"count": float64(1)}}},
+			}}
+			accessor := newAccessor(object)
+			definition := v1alpha1.ComponentDefinition{
+				Name: "svc",
+				SpecDefinition: &v1alpha1.SpecDefinition{
+					FragmentedPodSpecDefinition: &v1alpha1.FragmentedPodSpecDefinition{ResourcesPath: ptr.To(".spec.resources")},
+				},
+			}
+
+			err := accessor.UpdateFragmentedPodSpec(ctx, definition, []FragmentedPodSpec{{
+				Resources: &corev1.ResourceRequirements{Claims: []corev1.ResourceClaim{{Name: "gpu"}}},
+			}})
+			Expect(err).To(MatchError(ErrFragmentShape))
+		})
+
+		It("refuses a change the merge cannot express (duplicate container names)", func() {
+			object := map[string]any{"spec": map[string]any{"containers": []any{
+				map[string]any{"name": "main", "image": "a:v1"},
+				map[string]any{"name": "main", "image": "b:v1"},
+			}}}
+			accessor := newAccessor(object)
+			definition := v1alpha1.ComponentDefinition{
+				Name:           "pod",
+				SpecDefinition: &v1alpha1.SpecDefinition{PodSpecPath: ptr.To(".spec")},
+			}
+
+			specs, err := accessor.ExtractPodSpec(ctx, definition)
+			Expect(err).NotTo(HaveOccurred())
+			specs[0].Containers[1].Image = "b:v2"
+
+			err = accessor.UpdatePodSpec(ctx, definition, specs)
+			Expect(err).To(MatchError(ErrReadBackMismatch))
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got["spec"].(map[string]any)["containers"].([]any)[1].(map[string]any)["image"]).To(Equal("b:v1"))
+		})
+
+		// An absent fragment reads as a zero projection; writing a changed value
+		// would create it (a Worker replica spec with an empty pod template).
+		It("refuses to create a template the object does not store (Master-only PyTorchJob shape)", func() {
+			object := map[string]any{"spec": map[string]any{"pytorchReplicaSpecs": map[string]any{
+				"Master": map[string]any{"replicas": float64(1), "template": map[string]any{"spec": map[string]any{
+					"containers": []any{map[string]any{"name": "pytorch", "image": "train:v1"}},
+				}}},
+			}}}
+			want := deepCopyMap(object)
+			accessor := newAccessor(object)
+			definition := v1alpha1.ComponentDefinition{
+				Name:           "worker",
+				SpecDefinition: &v1alpha1.SpecDefinition{PodTemplateSpecPath: ptr.To(".spec.pytorchReplicaSpecs.Worker.template")},
+			}
+
+			templates, err := accessor.ExtractPodTemplateSpec(ctx, definition)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(templates).To(HaveLen(1))
+			Expect(accessor.UpdatePodTemplateSpec(ctx, definition, templates)).To(Succeed(), "an unchanged zero template is a no-op")
+
+			templates[0].Spec.SchedulerName = "kai-scheduler"
+			err = accessor.UpdatePodTemplateSpec(ctx, definition, templates)
+			var refused *WriteError
+			Expect(errors.As(err, &refused)).To(BeTrue(), "got: %v", err)
+			Expect(err).To(MatchError(ErrFragmentAbsent))
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(want))
+		})
+
+		DescribeTable("creates fields of a stored fragmented component and never the component",
+			func(object string, definition v1alpha1.FragmentedPodSpecDefinition, edit func(*FragmentedPodSpec), wantErr error) {
+				var decoded map[string]any
+				Expect(json.Unmarshal([]byte(object), &decoded)).To(Succeed())
+				want := deepCopyMap(decoded)
+				accessor := newAccessor(decoded)
+				component := v1alpha1.ComponentDefinition{
+					Name:           "component",
+					SpecDefinition: &v1alpha1.SpecDefinition{FragmentedPodSpecDefinition: &definition},
+				}
+
+				fragments, err := accessor.ExtractFragmentedPodSpec(ctx, component)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fragments).To(HaveLen(1))
+				edit(&fragments[0])
+
+				err = accessor.UpdateFragmentedPodSpec(ctx, component, fragments)
+				got, getErr := accessor.GetObject()
+				Expect(getErr).NotTo(HaveOccurred())
+				if wantErr != nil {
+					Expect(err).To(MatchError(wantErr))
+					Expect(got).To(Equal(want))
+					return
+				}
+				Expect(err).NotTo(HaveOccurred())
+				readBack, err := accessor.ExtractFragmentedPodSpec(ctx, component)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(readBack).To(Equal(fragments))
+			},
+			Entry("node affinity under an absent affinity map of a stored component (NIMService shape)",
+				`{"spec":{"replicas":1,"resources":{"limits":{"cpu":"1"}}}}`,
+				v1alpha1.FragmentedPodSpecDefinition{SchedulerNamePath: ptr.To(".spec.schedulerName"), ResourcesPath: ptr.To(".spec.resources"), NodeAffinityPath: ptr.To(".spec.affinity.nodeAffinity")},
+				func(f *FragmentedPodSpec) {
+					f.NodeAffinity = &corev1.NodeAffinity{RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "gpu", Operator: corev1.NodeSelectorOpExists}}}},
+					}}
+				}, nil),
+			Entry("a lone resources path whose parent is stored (Milvus etcd shape)",
+				`{"spec":{"dependencies":{"etcd":{"inCluster":{"values":{"replicaCount":1}}}}}}`,
+				v1alpha1.FragmentedPodSpecDefinition{ResourcesPath: ptr.To(".spec.dependencies.etcd.inCluster.values.resources")},
+				func(f *FragmentedPodSpec) {
+					f.Resources = &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")}}
+				}, nil),
+			Entry("a lone resources path whose parent is absent (Milvus pulsar shape)",
+				`{"spec":{"dependencies":{"pulsar":{"external":false}}}}`,
+				v1alpha1.FragmentedPodSpecDefinition{ResourcesPath: ptr.To(".spec.dependencies.pulsar.inCluster.values.resources")},
+				func(f *FragmentedPodSpec) {
+					f.Resources = &corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")}}
+				}, ErrFragmentAbsent),
+			Entry("a component the object does not store (standalone Milvus proxy shape)",
+				`{"spec":{"components":{"standalone":{"replicas":1}}}}`,
+				v1alpha1.FragmentedPodSpecDefinition{SchedulerNamePath: ptr.To(".spec.components.proxy.schedulerName"), LabelsPath: ptr.To(".spec.components.proxy.podLabels"), ResourcesPath: ptr.To(".spec.components.proxy.resources")},
+				func(f *FragmentedPodSpec) { f.SchedulerName = "kai-scheduler" }, ErrFragmentAbsent),
+		)
+
+		It("reports a fragment the definition has no path for as DefinitionNotFoundError", func() {
+			accessor := newAccessor(map[string]any{"spec": map[string]any{"resources": map[string]any{}}})
+			definition := v1alpha1.ComponentDefinition{
+				Name: "nimcache",
+				SpecDefinition: &v1alpha1.SpecDefinition{
+					FragmentedPodSpecDefinition: &v1alpha1.FragmentedPodSpecDefinition{ResourcesPath: ptr.To(".spec.resources")},
+				},
+			}
+
+			err := accessor.UpdateFragmentedPodSpec(ctx, definition, []FragmentedPodSpec{{SchedulerName: "custom"}})
+			Expect(isDefinitionNotFoundError(err)).To(BeTrue(), "got: %v", err)
+		})
+	})
+
+	Context("computed paths (NIMCache shape)", func() {
+		nimCacheObject := func() map[string]any {
+			return map[string]any{"spec": map[string]any{
+				"schedulerName": "default",
+				"resources":     map[string]any{"cpu": "1", "memory": "2Gi"},
+			}}
+		}
+		// The resources view is computed, so there is no location to write to.
+		definition := v1alpha1.ComponentDefinition{
+			Name: "nimcache",
+			SpecDefinition: &v1alpha1.SpecDefinition{
+				FragmentedPodSpecDefinition: &v1alpha1.FragmentedPodSpecDefinition{
+					SchedulerNamePath: ptr.To(".spec.schedulerName"),
+					ResourcesPath:     ptr.To("{requests: .spec.resources}"),
+				},
+			},
+		}
+
+		It("treats an unchanged computed value as a no-op next to a real change", func() {
+			accessor := newAccessor(nimCacheObject())
+
+			specs, err := accessor.ExtractFragmentedPodSpec(ctx, definition)
+			Expect(err).NotTo(HaveOccurred())
+			specs[0].SchedulerName = "custom"
+			Expect(accessor.UpdateFragmentedPodSpec(ctx, definition, specs)).To(Succeed())
+
+			want := nimCacheObject()
+			want["spec"].(map[string]any)["schedulerName"] = "custom"
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(want)))
+		})
+
+		It("refuses a changed computed value and commits nothing", func() {
+			accessor := newAccessor(nimCacheObject())
+
+			specs, err := accessor.ExtractFragmentedPodSpec(ctx, definition)
+			Expect(err).NotTo(HaveOccurred())
+			specs[0].SchedulerName = "custom"
+			delete(specs[0].Resources.Requests, corev1.ResourceMemory)
+
+			err = accessor.UpdateFragmentedPodSpec(ctx, definition, specs)
+			var notWritable *execution.PathNotWritableError
+			Expect(errors.As(err, &notWritable)).To(BeTrue(), "got: %v", err)
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(nimCacheObject())))
+		})
+	})
+
+	Context("overlapping fragment views (Dynamo mainContainer shape)", func() {
+		definition := v1alpha1.ComponentDefinition{
+			Name: "svc",
+			SpecDefinition: &v1alpha1.SpecDefinition{
+				FragmentedPodSpecDefinition: &v1alpha1.FragmentedPodSpecDefinition{
+					ImagePath:     ptr.To(".spec.mainContainer.image"),
+					ContainerPath: ptr.To(".spec.mainContainer"),
+				},
+			},
+		}
+
+		// The container view keeps its stale image unless the entry sets it.
+		DescribeTable("combines compatible changes from both views",
+			func(mutate func(*corev1.Container), wantContainer map[string]any) {
+				accessor := newAccessor(map[string]any{"spec": map[string]any{"mainContainer": map[string]any{
+					"name": "main", "image": "app:v1", "vendorExtension": "keep",
+				}}})
+
+				specs, err := accessor.ExtractFragmentedPodSpec(ctx, definition)
+				Expect(err).NotTo(HaveOccurred())
+				specs[0].Image = "app:v2"
+				mutate(specs[0].Container)
+				Expect(accessor.UpdateFragmentedPodSpec(ctx, definition, specs)).To(Succeed())
+
+				got, err := accessor.GetObject()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(asJSON(got)).To(MatchJSON(asJSON(map[string]any{"spec": map[string]any{"mainContainer": wantContainer}})))
+			},
+			Entry("the same image in both views",
+				func(c *corev1.Container) { c.Image = "app:v2" },
+				map[string]any{"name": "main", "image": "app:v2", "vendorExtension": "keep"}),
+			Entry("an independent field in the container view",
+				func(c *corev1.Container) { c.Args = []string{"serve"} },
+				map[string]any{"name": "main", "image": "app:v2", "args": []any{"serve"}, "vendorExtension": "keep"}),
+		)
+	})
+
+	Context("overlapping writes staged in one plan", func() {
+		DescribeTable("combines a parent write with child writes in either order",
+			func(childFirst bool) {
+				accessor := newAccessor(map[string]any{"spec": map[string]any{
+					"image": "app:v1", "args": []any{"old"}, "vendorExtension": "keep",
+				}})
+				paths := []string{".spec", ".spec.image", ".spec.command"}
+				values := []any{
+					map[string]any{"image": "app:v1", "args": []any{"new"}, "vendorExtension": "keep"},
+					"app:v2",
+					[]any{"serve"},
+				}
+				if childFirst {
+					paths[0], paths[2] = paths[2], paths[0]
+					values[0], values[2] = values[2], values[0]
+				}
+
+				plan := accessor.newWritePlan()
+				for i, path := range paths {
+					Expect(plan.stage(ctx, v1alpha1.ComponentDefinition{}, path, []any{values[i]}, nil)).To(Succeed())
+				}
+				Expect(plan.commit(ctx)).To(Succeed())
+
+				got, err := accessor.GetObject()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(asJSON(got)).To(MatchJSON(`{"spec":{"image":"app:v2","args":["new"],"command":["serve"],"vendorExtension":"keep"}}`))
+			},
+			Entry("parent first", false),
+			Entry("children first", true),
+		)
+
+		It("refuses a parent list reorder that moves the element a child write addressed", func() {
+			containersObject := func() map[string]any {
+				return map[string]any{"spec": map[string]any{"containers": []any{
+					map[string]any{"name": "a", "image": "app:v1"},
+					map[string]any{"name": "b", "image": "app:v1"},
+				}}}
+			}
+			accessor := newAccessor(containersObject())
+
+			plan := accessor.newWritePlan()
+			Expect(plan.stage(ctx, v1alpha1.ComponentDefinition{}, ".spec.containers[0].image", []any{"app:v2"}, nil)).To(Succeed())
+			reordered := []any{
+				map[string]any{"name": "b", "image": "app:v1"},
+				map[string]any{"name": "a", "image": "app:v1"},
+			}
+			Expect(plan.stage(ctx, v1alpha1.ComponentDefinition{}, ".spec.containers", []any{reordered}, nil)).To(MatchError(ErrConflictingWrites))
+
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(containersObject())))
+		})
+	})
+
+	Context("components with instance ids", func() {
+		servicesObject := func() map[string]any {
+			return map[string]any{"services": []any{
+				map[string]any{
+					"name": "a", "schedulerName": "first",
+					"containers": []any{map[string]any{"name": "main", "image": "app:v1"}},
+				},
+				map[string]any{
+					"name": "b", "schedulerName": "keep", "labels": map[string]any{"app": "keep"},
+					"containers": []any{map[string]any{"name": "main", "image": "app:v1"}},
+				},
+			}}
+		}
+		definition := v1alpha1.ComponentDefinition{
+			Name:           "service",
+			InstanceIdPath: ptr.To(".services[].name"),
+			SpecDefinition: &v1alpha1.SpecDefinition{
+				FragmentedPodSpecDefinition: &v1alpha1.FragmentedPodSpecDefinition{
+					SchedulerNamePath: ptr.To(".services[].schedulerName"),
+					LabelsPath:        ptr.To(".services[].labels"),
+					ContainersPath:    ptr.To(".services[].containers"),
+				},
+			},
+		}
+
+		It("writes the instance that changed and leaves the others untouched", func() {
+			accessor := newAccessor(servicesObject())
+
+			Expect(accessor.UpdateFragmentedPodSpec(ctx, definition, []FragmentedPodSpec{
+				{SchedulerName: "custom", Labels: map[string]string{"app": "new"}},
+				{},
+			})).To(Succeed())
+
+			want := servicesObject()
+			first := want["services"].([]any)[0].(map[string]any)
+			first["schedulerName"] = "custom"
+			first["labels"] = map[string]any{"app": "new"}
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(want)))
+		})
+
+		It("leaves the object byte-identical when nothing changed", func() {
+			accessor := newAccessor(servicesObject())
+
+			specs, err := accessor.ExtractFragmentedPodSpec(ctx, definition)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(accessor.UpdateFragmentedPodSpec(ctx, definition, specs)).To(Succeed())
+
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(servicesObject())))
+		})
+
+		It("commits nothing when one instance's fragment is refused", func() {
+			accessor := newAccessor(servicesObject())
+
+			err := accessor.UpdateFragmentedPodSpec(ctx, definition, []FragmentedPodSpec{
+				{SchedulerName: "custom"},
+				{Labels: map[string]string{"$patch": "delete"}},
+			})
+			var refused *WriteError
+			Expect(errors.As(err, &refused)).To(BeTrue(), "got: %v", err)
+			Expect(err).To(MatchError(ErrDirectiveKey))
+
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(servicesObject())))
+		})
+
+		It("refuses fewer values than instances", func() {
+			accessor := newAccessor(servicesObject())
+
+			err := accessor.UpdateFragmentedPodSpec(ctx, definition, []FragmentedPodSpec{{SchedulerName: "custom"}})
+			var mismatch *InstanceCountMismatchError
+			Expect(errors.As(err, &mismatch)).To(BeTrue(), "got: %v", err)
+
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(servicesObject())))
+		})
+
+		It("leaves a multi-instance pod template byte-identical when nothing changed", func() {
+			jobSetObject := func() map[string]any {
+				job := func(name, image string) map[string]any {
+					return map[string]any{"name": name, "template": map[string]any{"spec": map[string]any{"template": map[string]any{
+						"spec": map[string]any{"containers": []any{map[string]any{"name": "main", "image": image}}},
+					}}}}
+				}
+				return map[string]any{"spec": map[string]any{"replicatedJobs": []any{job("a", "app:v1"), job("b", "app:v2")}}}
+			}
+			templateDefinition := v1alpha1.ComponentDefinition{
+				Name:           "replicated-job",
+				InstanceIdPath: ptr.To(".spec.replicatedJobs[].name"),
+				SpecDefinition: &v1alpha1.SpecDefinition{
+					PodTemplateSpecPath: ptr.To(".spec.replicatedJobs[].template.spec.template"),
+				},
+			}
+			accessor := newAccessor(jobSetObject())
+
+			templates, err := accessor.ExtractPodTemplateSpec(ctx, templateDefinition)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(accessor.UpdatePodTemplateSpec(ctx, templateDefinition, templates)).To(Succeed())
+
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(asJSON(got)).To(MatchJSON(asJSON(jobSetObject())))
+		})
+	})
+
+	Context("combineWrites", func() {
+		DescribeTable("keeps each side's changes against the baseline",
+			func(baseline, first, second, want map[string]any) {
+				got, err := combineWrites(writeValue{baseline, true}, writeValue{first, true}, writeValue{second, true})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(got).To(Equal(writeValue{value: want, present: true}))
+			},
+			Entry("one side deletes a key the other leaves alone",
+				map[string]any{"a": "old", "b": "old"}, map[string]any{"b": "old"}, map[string]any{"a": "old", "b": "new"},
+				map[string]any{"b": "new"}),
+			Entry("one side sets null while the other edits a sibling",
+				map[string]any{"a": "old", "b": "old"}, map[string]any{"a": nil, "b": "old"}, map[string]any{"a": "old", "b": "new"},
+				map[string]any{"a": nil, "b": "new"}),
+			Entry("both sides add different keys",
+				map[string]any(nil), map[string]any{"a": "new"}, map[string]any{"b": "new"},
+				map[string]any{"a": "new", "b": "new"}),
+		)
+
+		It("refuses a delete on one side and a null on the other", func() {
+			_, err := combineWrites(
+				writeValue{map[string]any{"a": "old"}, true},
+				writeValue{map[string]any{}, true},
+				writeValue{map[string]any{"a": nil}, true},
+			)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Context("atomic lists", func() {
+		It("replaces tolerations whole like Kubernetes does, clearing unknown fields inside their entries", func() {
+			accessor := newAccessor(map[string]any{"spec": map[string]any{"template": map[string]any{
+				"containers":  []any{map[string]any{"name": "main", "image": "app:v1"}},
+				"tolerations": []any{map[string]any{"key": "gpu", "operator": "Exists", "vendorExtension": "lost"}},
+			}}})
+			definition := v1alpha1.ComponentDefinition{
+				Name:           "svc",
+				SpecDefinition: &v1alpha1.SpecDefinition{PodSpecPath: ptr.To(".spec.template")},
+			}
+
+			specs, err := accessor.ExtractPodSpec(ctx, definition)
+			Expect(err).NotTo(HaveOccurred())
+			specs[0].Tolerations = append(specs[0].Tolerations, corev1.Toleration{Key: "batch", Operator: corev1.TolerationOpExists})
+			Expect(accessor.UpdatePodSpec(ctx, definition, specs)).To(Succeed())
+
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			tolerations := got["spec"].(map[string]any)["template"].(map[string]any)["tolerations"].([]any)
+			Expect(tolerations).To(HaveLen(2))
+			Expect(tolerations[0]).NotTo(HaveKey("vendorExtension"), "tolerations carry no merge key, so a change replaces every entry")
 		})
 	})
 })
