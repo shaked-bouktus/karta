@@ -22,7 +22,8 @@ import (
 // Causes a refused write wraps, for callers to branch on with errors.Is.
 var (
 	// ErrFragmentShape: the stored fragment does not decode into the
-	// projection type, so the workload stores something else at the path.
+	// projection type, or holds a list the merge cannot process (a null entry
+	// among objects), so the workload stores something else at the path.
 	ErrFragmentShape = errors.New("stored fragment does not fit the projection type")
 	// ErrReadBackMismatch: the merge cannot express the change, so the merged
 	// fragment would not read back as the supplied value.
@@ -523,7 +524,7 @@ func mergeStrategic(fragment any, newJSON []byte, schema any) (any, bool, error)
 	}
 	base, _ := fragment.(map[string]any)
 	raw := deepCopyMap(base)
-	projectResizedEnvGroups(raw, baseline, supplied, schema)
+	projectResizedGroups(raw, baseline, supplied, schema)
 	for _, object := range []map[string]any{baseline, supplied, raw} {
 		if err := transformCompositeKeys(object, schema, false); err != nil {
 			return nil, false, err
@@ -541,9 +542,9 @@ func mergeStrategic(fragment any, newJSON []byte, schema any) (any, bool, error)
 	// keeps unknown element fields, and a merge the projection cannot express
 	// (a union flip) fails verification instead of corrupting.
 	stripRetainKeys(map[string]any(patchMap))
-	merged, err := strategicpatch.StrategicMergeMapPatch(raw, patchMap, schema)
+	merged, err := mergeStoredFragment(raw, patchMap, schema)
 	if err != nil {
-		return nil, false, fmt.Errorf("merge patch onto stored fragment: %w", err)
+		return nil, false, fmt.Errorf("%w: merge patch onto stored fragment: %w", ErrFragmentShape, err)
 	}
 	if err := transformCompositeKeys(merged, schema, true); err != nil {
 		return nil, false, err
@@ -552,6 +553,22 @@ func mergeStrategic(fragment any, newJSON []byte, schema any) (any, bool, error)
 		return nil, false, err
 	}
 	return map[string]any(merged), true, nil
+}
+
+// mergeStoredFragment applies the patch onto the raw fragment. A stored keyed
+// list may mix a null entry with objects (the projection reads the null as a
+// zero value); strategicpatch panics on that when the null comes first
+// (sliceElementType) and returns an element type error otherwise. Both mean
+// the stored list has a shape the merge cannot process, and the caller reports
+// them as ErrFragmentShape. A patch that does not touch the list never reaches
+// it, so unrelated edits still land.
+func mergeStoredFragment(raw map[string]any, patch strategicpatch.JSONMap, schema any) (merged strategicpatch.JSONMap, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("strategic merge failed on the stored lists: %v", recovered)
+		}
+	}()
+	return strategicpatch.StrategicMergeMapPatch(raw, patch, schema)
 }
 
 // mergePlain handles schemaless fragments, which are leaf values the consumer
