@@ -66,8 +66,8 @@ sboms:
 
 release:
   github:
-    owner: dsx-ai-factory
-    name: workload-map
+    owner: shaked-bouktus
+    name: karta
   ids:
     - karta
   # A maintainer publishes the GitHub Release, with notes from CHANGELOG.md, and
