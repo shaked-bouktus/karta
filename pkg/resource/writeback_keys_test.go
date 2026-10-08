@@ -194,10 +194,8 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 		expectObject(accessor, want)
 	})
 
-	// Every keyed list of the pod spec can repeat its merge key in a stored object.
-	// They follow the env rules: identity is the key plus its occurrence, edits and
-	// reorders keep unknown fields, and a key whose definition count changes is
-	// written as supplied, as an Update would write it.
+	// Every keyed list follows the env rules: identity is the key plus its
+	// occurrence, and a key whose count changes is written as supplied.
 	Context("keyed lists other than env that repeat a key", func() {
 		podObject := func(fields string) map[string]any {
 			return decode(`{"spec":{"containers":[{"name":"main","image":"app:v1"}],` + fields + `}}`)
