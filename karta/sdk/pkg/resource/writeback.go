@@ -22,8 +22,7 @@ import (
 // Causes a refused write wraps, for callers to branch on with errors.Is.
 var (
 	// ErrFragmentShape: the stored fragment does not decode into the
-	// projection type, or holds a list the merge cannot process (a null entry
-	// among objects), so the workload stores something else at the path.
+	// projection type, or holds a list the merge cannot process (a null entry).
 	ErrFragmentShape = errors.New("stored fragment does not fit the projection type")
 	// ErrReadBackMismatch: the merge cannot express the change, so the merged
 	// fragment would not read back as the supplied value.
@@ -135,10 +134,9 @@ func (a *Accessor) newWritePlan() *writePlan {
 //  4. merge the patch onto the raw stored fragment, keeping every field the
 //     projection type does not know
 //  5. verify the merged fragment reads back as exactly the supplied value
-//  6. refuse a change to a component instance the object does not store: an
-//     absent fragment reads as a zero projection, and writing a changed value
-//     would create its component (a Worker replica spec holding only the
-//     written fields); see componentRoots for what counts as the component
+//  6. refuse a change to a component the object does not store: an absent
+//     fragment reads as a zero projection and the write would create it
+//     (see componentRoots)
 //  7. combine compatible overlapping writes and refuse conflicting changes
 //
 // A nil value skips its location. schema carries the patch merge keys (for
@@ -207,18 +205,14 @@ func (p *writePlan) stage(ctx context.Context, definition v1alpha1.ComponentDefi
 	return nil
 }
 
-// componentRoots returns, per resolved location, where the object stores the
-// component instance the write addresses. A write fills in fields below the
-// root, including an absent optional fragment (a sparse pod spec overlay the
-// controller merges onto its base), and never creates the root itself (the
-// Worker replica spec of a Master-only job). For a template, pod spec or
-// metadata definition the root is the parent of the fragment. For a fragmented
-// definition it is the deepest location every path of the definition shares
-// (the clique entry under its scheduler name, labels and containers), or the
-// parent of a lone path (the values map under a lone resources path). Paths
-// that compute a value or resolve a different number of instances do not take
-// part. The roots depend only on the definition and the instance count, so one
-// plan resolves them once per count.
+// componentRoots returns, per location, where the object stores the component
+// instance a write addresses. A write may fill in fields below the root (an
+// absent pod spec overlay, nodeAffinity under a missing affinity) but never
+// create the root itself (the Worker of a Master-only job). For a template,
+// pod spec or metadata definition the root is the fragment's parent. For a
+// fragmented definition it is the deepest location all its paths share, or the
+// parent of a lone path. Paths that compute a value or resolve a different
+// number of instances are ignored. Cached per instance count.
 func (p *writePlan) componentRoots(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, paths [][]any) [][]any {
 	if roots, ok := p.roots[len(paths)]; ok {
 		return roots
@@ -555,13 +549,10 @@ func mergeStrategic(fragment any, newJSON []byte, schema any) (any, bool, error)
 	return map[string]any(merged), true, nil
 }
 
-// mergeStoredFragment applies the patch onto the raw fragment. A stored keyed
-// list may mix a null entry with objects (the projection reads the null as a
-// zero value); strategicpatch panics on that when the null comes first
-// (sliceElementType) and returns an element type error otherwise. Both mean
-// the stored list has a shape the merge cannot process, and the caller reports
-// them as ErrFragmentShape. A patch that does not touch the list never reaches
-// it, so unrelated edits still land.
+// mergeStoredFragment applies the patch onto the raw fragment. strategicpatch
+// panics on a keyed list that mixes a null entry with objects
+// (sliceElementType); that becomes an error, which the caller reports as
+// ErrFragmentShape. A patch that does not touch the list never reaches it.
 func mergeStoredFragment(raw map[string]any, patch strategicpatch.JSONMap, schema any) (merged strategicpatch.JSONMap, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -702,8 +693,7 @@ func canonicalLocation(location []any) ([]any, error) {
 }
 
 // fragmentAt walks a canonical location over the decoded object. An absent
-// fragment returns nil: it diffs against an empty baseline, and stage lets
-// the write create it only below a stored component root.
+// fragment returns nil and diffs against an empty baseline.
 func fragmentAt(object any, location []any) any {
 	current := object
 	for _, token := range location {

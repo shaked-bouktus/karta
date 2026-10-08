@@ -493,10 +493,8 @@ var _ = Describe("write-back", func() {
 	})
 
 	Context("refusal causes", func() {
-		// A stored keyed list may hold a null entry. The projection reads it as a
-		// zero value, the raw list keeps nil, and strategicpatch cannot merge a list
-		// that mixes nulls with objects. An edit that touches the list is refused
-		// as a shape problem; an edit elsewhere leaves the list alone and lands.
+		// The projection reads a null list entry as a zero value, the raw list
+		// keeps nil, and strategicpatch cannot merge the two.
 		DescribeTable("refuses an edit to a keyed list that stores a null entry and leaves unrelated edits alone",
 			func(object string, touch func(*corev1.PodSpec)) {
 				var decoded map[string]any
@@ -561,8 +559,7 @@ var _ = Describe("write-back", func() {
 			Expect(err).To(MatchError(ErrFragmentShape))
 		})
 
-		// A stored entry without its merge key keeps a null identity: the merge
-		// cannot address it, so an edit to it fails read-back and nothing is written.
+		// An entry without its merge key has a null identity the merge cannot address.
 		It("refuses a change the merge cannot express (an env entry without a name)", func() {
 			object := map[string]any{"spec": map[string]any{"containers": []any{
 				map[string]any{"name": "main", "image": "a:v1", "env": []any{
