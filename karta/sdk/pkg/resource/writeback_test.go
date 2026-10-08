@@ -493,6 +493,55 @@ var _ = Describe("write-back", func() {
 	})
 
 	Context("refusal causes", func() {
+		// A stored keyed list may hold a null entry. The projection reads it as a
+		// zero value, the raw list keeps nil, and strategicpatch cannot merge a list
+		// that mixes nulls with objects. An edit that touches the list is refused
+		// as a shape problem; an edit elsewhere leaves the list alone and lands.
+		DescribeTable("refuses an edit to a keyed list that stores a null entry and leaves unrelated edits alone",
+			func(object string, touch func(*corev1.PodSpec)) {
+				var decoded map[string]any
+				Expect(json.Unmarshal([]byte(object), &decoded)).To(Succeed())
+				want := deepCopyMap(decoded)
+				accessor := newAccessor(decoded)
+				definition := v1alpha1.ComponentDefinition{
+					Name:           "pod",
+					SpecDefinition: &v1alpha1.SpecDefinition{PodSpecPath: ptr.To(".spec")},
+				}
+
+				specs, err := accessor.ExtractPodSpec(ctx, definition)
+				Expect(err).NotTo(HaveOccurred())
+				touch(&specs[0])
+				err = accessor.UpdatePodSpec(ctx, definition, specs)
+				var refused *WriteError
+				Expect(errors.As(err, &refused)).To(BeTrue(), "got: %v", err)
+				Expect(err).To(MatchError(ErrFragmentShape))
+				got, err := accessor.GetObject()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(got).To(Equal(want))
+
+				specs, err = accessor.ExtractPodSpec(ctx, definition)
+				Expect(err).NotTo(HaveOccurred())
+				specs[0].SchedulerName = "kai-scheduler"
+				Expect(accessor.UpdatePodSpec(ctx, definition, specs)).To(Succeed())
+				want["spec"].(map[string]any)["schedulerName"] = "kai-scheduler"
+				got, err = accessor.GetObject()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(got).To(Equal(want), "the unrelated edit must leave the malformed list untouched")
+			},
+			Entry("a leading null env entry",
+				`{"spec":{"containers":[{"name":"main","image":"app:v1","env":[null,{"name":"X","value":"old"}]}]}}`,
+				func(s *corev1.PodSpec) { s.Containers[0].Env[1].Value = "new" }),
+			Entry("a trailing null env entry",
+				`{"spec":{"containers":[{"name":"main","image":"app:v1","env":[{"name":"X","value":"old"},null]}]}}`,
+				func(s *corev1.PodSpec) { s.Containers[0].Env[0].Value = "new" }),
+			Entry("a null port entry",
+				`{"spec":{"containers":[{"name":"main","image":"app:v1","ports":[null,{"containerPort":80}]}]}}`,
+				func(s *corev1.PodSpec) { s.Containers[0].Ports[1].Name = "http" }),
+			Entry("a null volume entry",
+				`{"spec":{"containers":[{"name":"main","image":"app:v1"}],"volumes":[null,{"name":"data","emptyDir":{}}]}}`,
+				func(s *corev1.PodSpec) { s.Volumes[1].Name = "scratch" }),
+		)
+
 		It("refuses a stored fragment that does not fit the projection type", func() {
 			// A requests entry holding an object is not a resource.Quantity.
 			object := map[string]any{"spec": map[string]any{
@@ -512,11 +561,15 @@ var _ = Describe("write-back", func() {
 			Expect(err).To(MatchError(ErrFragmentShape))
 		})
 
-		It("refuses a change the merge cannot express (duplicate container names)", func() {
+		// A stored entry without its merge key keeps a null identity: the merge
+		// cannot address it, so an edit to it fails read-back and nothing is written.
+		It("refuses a change the merge cannot express (an env entry without a name)", func() {
 			object := map[string]any{"spec": map[string]any{"containers": []any{
-				map[string]any{"name": "main", "image": "a:v1"},
-				map[string]any{"name": "main", "image": "b:v1"},
+				map[string]any{"name": "main", "image": "a:v1", "env": []any{
+					map[string]any{"value": "first", "vendorExtension": "keep"},
+				}},
 			}}}
+			want := deepCopyMap(object)
 			accessor := newAccessor(object)
 			definition := v1alpha1.ComponentDefinition{
 				Name:           "pod",
@@ -525,13 +578,13 @@ var _ = Describe("write-back", func() {
 
 			specs, err := accessor.ExtractPodSpec(ctx, definition)
 			Expect(err).NotTo(HaveOccurred())
-			specs[0].Containers[1].Image = "b:v2"
+			specs[0].Containers[0].Env[0].Value = "next"
 
 			err = accessor.UpdatePodSpec(ctx, definition, specs)
 			Expect(err).To(MatchError(ErrReadBackMismatch))
 			got, err := accessor.GetObject()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(got["spec"].(map[string]any)["containers"].([]any)[1].(map[string]any)["image"]).To(Equal("b:v1"))
+			Expect(got).To(Equal(want))
 		})
 
 		// An absent fragment reads as a zero projection; writing a changed value

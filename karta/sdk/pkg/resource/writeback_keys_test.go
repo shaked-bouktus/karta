@@ -194,6 +194,67 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 		expectObject(accessor, want)
 	})
 
+	// Every keyed list of the pod spec can repeat its merge key in a stored object.
+	// They follow the env rules: identity is the key plus its occurrence, edits and
+	// reorders keep unknown fields, and a key whose definition count changes is
+	// written as supplied, as an Update would write it.
+	Context("keyed lists other than env that repeat a key", func() {
+		podObject := func(fields string) map[string]any {
+			return decode(`{"spec":{"containers":[{"name":"main","image":"app:v1"}],` + fields + `}}`)
+		}
+
+		DescribeTable("merge per occurrence",
+			func(stored string, mutate func(*corev1.PodSpec), want string) {
+				accessor := NewAccessor(execution.NewDefaultRunner(podObject(stored)))
+
+				specs, err := accessor.ExtractPodSpec(ctx, podSpecDefinition)
+				Expect(err).NotTo(HaveOccurred())
+				mutate(&specs[0])
+
+				Expect(accessor.UpdatePodSpec(ctx, podSpecDefinition, specs)).To(Succeed())
+				expectObject(accessor, podObject(want))
+			},
+			Entry("imagePullSecrets reduced from two equal entries to one",
+				`"imagePullSecrets":[{"name":"x"},{"name":"x"}]`,
+				func(s *corev1.PodSpec) { s.ImagePullSecrets = s.ImagePullSecrets[:1] },
+				`"imagePullSecrets":[{"name":"x"}]`),
+			Entry("hostAliases sharing an ip: the second entry's hostnames change, unknown fields stay",
+				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["first"],"vendorExtension":"a"},{"ip":"127.0.0.1","hostnames":["second"],"vendorExtension":"b"}]`,
+				func(s *corev1.PodSpec) { s.HostAliases[1].Hostnames = []string{"third"} },
+				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["first"],"vendorExtension":"a"},{"ip":"127.0.0.1","hostnames":["third"],"vendorExtension":"b"}]`),
+			Entry("hostAliases sharing an ip: one removed, the resized group is written as supplied",
+				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["first"],"vendorExtension":"a"},{"ip":"127.0.0.1","hostnames":["second"],"vendorExtension":"b"}]`,
+				func(s *corev1.PodSpec) { s.HostAliases = s.HostAliases[:1] },
+				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["first"]}]`),
+			Entry("hostAliases sharing an ip: the second entry gets its own ip",
+				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["first"],"vendorExtension":"a"},{"ip":"127.0.0.1","hostnames":["second"],"vendorExtension":"b"}]`,
+				func(s *corev1.PodSpec) { s.HostAliases[1].IP = "127.0.0.2" },
+				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["first"]},{"ip":"127.0.0.2","hostnames":["second"]}]`),
+			Entry("volumes sharing a name: the second entry's medium changes, unknown fields stay",
+				`"volumes":[{"name":"data","emptyDir":{},"vendorExtension":"a"},{"name":"data","emptyDir":{},"vendorExtension":"b"}]`,
+				func(s *corev1.PodSpec) { s.Volumes[1].EmptyDir.Medium = corev1.StorageMediumMemory },
+				`"volumes":[{"name":"data","emptyDir":{},"vendorExtension":"a"},{"name":"data","emptyDir":{"medium":"Memory"},"vendorExtension":"b"}]`),
+			Entry("a reorder keeps every unknown field",
+				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["first"],"vendorExtension":"a"},{"ip":"127.0.0.1","hostnames":["second"],"vendorExtension":"b"}]`,
+				func(s *corev1.PodSpec) { s.HostAliases[0], s.HostAliases[1] = s.HostAliases[1], s.HostAliases[0] },
+				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["second"],"vendorExtension":"a"},{"ip":"127.0.0.1","hostnames":["first"],"vendorExtension":"b"}]`),
+		)
+
+		// Two containers with one name are invalid for the apiserver, which rejects
+		// the PUT. Karta still addresses the second one and keeps its unknown field.
+		It("edits the second of two containers that share a name", func() {
+			object := decode(`{"spec":{"containers":[{"name":"main","image":"a:v1"},{"name":"main","image":"b:v1","vendorExtension":"keep"}]}}`)
+			accessor := NewAccessor(execution.NewDefaultRunner(object))
+
+			specs, err := accessor.ExtractPodSpec(ctx, podSpecDefinition)
+			Expect(err).NotTo(HaveOccurred())
+			specs[0].Containers[1].Image = "b:v2"
+
+			Expect(accessor.UpdatePodSpec(ctx, podSpecDefinition, specs)).To(Succeed())
+			expectObject(accessor, decode(`{"spec":{"containers":[{"name":"main","image":"a:v1"},{"name":"main","image":"b:v2","vendorExtension":"keep"}]}}`))
+		})
+	})
+
 	Context("env vars that repeat a name", func() {
 		// The kubelet uses the last definition; X=$(X):more appends to an earlier one.
 		envObject := func(env string) map[string]any {
