@@ -5,11 +5,12 @@ name: Upload artifacts to GitHub Container Registry
 on:
   push:
     branches: [ main ]
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
-      # The release is built for exact X.Y.Z versions. A prerelease tag would
-      # otherwise run the whole presubmit and then fail the version check.
-      - '!v*-*'
+  # A release runs when its GitHub Release is published, not when its tags are
+  # pushed: vX.Y.Z and karta/vX.Y.Z are pushed first, then the release is
+  # published from the existing vX.Y.Z tag. A draft does not fire this event
+  # until it is published.
+  release:
+    types: [ published ]
 
 permissions:
   contents: write
@@ -19,6 +20,9 @@ permissions:
 jobs:
   build-and-push:
     name: Build & Push Helm Chart and Operator Image
+    # The release is built for exact X.Y.Z versions. A prerelease would
+    # otherwise run the whole presubmit and then fail the version check.
+    if: github.event_name == 'push' || !github.event.release.prerelease
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -42,10 +46,12 @@ jobs:
           version: v4.2.4
 
       - name: Set package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            echo "Tag release: using the tag as the version (strip leading 'v' if present)"
-            PACKAGE_VERSION=${GITHUB_REF_NAME#v}
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            echo "Release: using its tag as the version (strip the leading 'v')"
+            PACKAGE_VERSION=${RELEASE_TAG#v}
           else
             echo "Push to main: dev build keyed off the commit sha"
             PACKAGE_VERSION=0.0.0-main-$(git rev-parse --short HEAD)
@@ -102,7 +108,7 @@ jobs:
       # Before anything is published: without the karta/vX.Y.Z tag on this
       # commit, the image and chart would ship and only `make release` would fail.
       - name: Validate release version, library module, and release tags
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'release'
         run: make release-validate VERSION="$PACKAGE_VERSION" REQUIRE_TAGS=1
 
       # Also before anything is published: GoReleaser opens the kli cask pull
@@ -112,7 +118,7 @@ jobs:
       # covers only this repository and lasts an hour, which outlives the job.
       - name: Mint the Homebrew tap token
         id: tap-token
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'release'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
@@ -121,14 +127,14 @@ jobs:
           permission-pull-requests: write
 
       - name: Run checks
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'release'
         run: make check VERSION="$PACKAGE_VERSION"
 
       # A dry run of the CLI release, still before anything is published. A
       # config change that breaks the archives or the cask would otherwise
       # surface inside `make release`, after the image and chart are pushed.
       - name: Verify the CLI release snapshot
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'release'
         run: make release-snapshot release-verify VERSION="$PACKAGE_VERSION"
 
       - name: Set up Docker Buildx
@@ -161,26 +167,29 @@ jobs:
         run: |
           helm push ./charts/karta-$PACKAGE_VERSION.tgz oci://${{ env.HELM_REGISTRY }}
 
-      - name: Publish tagged CLI release
-        if: github.ref_type == 'tag'
+      # GoReleaser finds the published release by its tag and uploads to it,
+      # keeping the notes written for it (release.mode in .goreleaser.yaml).
+      - name: Publish CLI release assets
+        if: github.event_name == 'release'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
         run: make release VERSION="$PACKAGE_VERSION"
 
       - name: Generate air-gap image lock
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'release'
         run: |
           # Run after GoReleaser because `release --clean` recreates dist/.
           make image-lock VERSION="$PACKAGE_VERSION" \
             IMAGE_LOCK_SET="image.repository=$REGISTRY_NAMESPACE/karta-operator"
 
-      - name: Attach chart and image locks to the GoReleaser release
-        if: github.ref_type == 'tag'
+      - name: Attach chart and image locks to the release
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" --clobber \
+          gh release upload "$RELEASE_TAG" --clobber \
             "charts/karta-$PACKAGE_VERSION.tgz" \
             "dist/imagelock-karta-v$PACKAGE_VERSION-linux-amd64.yaml" \
             "dist/imagelock-karta-v$PACKAGE_VERSION-linux-arm64.yaml"
