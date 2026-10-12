@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
+# Throwaway probe, not for merge. It shows what a workflow can and cannot do
+# to a protected default branch with its own GITHUB_TOKEN, under a ruleset
+# that mirrors upstream (pull request, signatures, CI check) with the Write
+# role as a bypass actor.
+name: Probe - direct commit to main with GITHUB_TOKEN
+on:
+  push:
+    branches: [ canary/git-push-probe ]
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: git CLI - empty commit pushed to main with GITHUB_TOKEN
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "probe: direct push to main with GITHUB_TOKEN"
+          git push origin HEAD:main
+
+      - name: Contents API - commit to main with GITHUB_TOKEN (how GoReleaser commits)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X PUT "repos/${{ github.repository }}/contents/probe.txt" \
+            -f message="probe: API commit to main with GITHUB_TOKEN" \
+            -f content="$(printf 'probe\n' | base64)" \
+            -f branch=main
