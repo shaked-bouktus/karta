@@ -57,10 +57,12 @@ checks it again.
 
 Releases up to v0.2.x published the library as
 `github.com/dsx-ai-factory/workload-map`, from the repository root. Patch
-releases on the `v0.2` branch keep that path. From the first release without a
-root `go.mod`, `go get github.com/dsx-ai-factory/workload-map@latest` resolves to
-a version with no packages, so the release notes for that release must carry
-the migration to the new import path.
+releases on the `v0.2` branch keep that path. On `main`, the root `go.mod` is a
+stub with no packages and a `Deprecated:` comment, so every later `vX.Y.Z` tag
+is a version of the old path that `go get` and `go list -u` report as
+deprecated, with a pointer to the new path. Upgrading to it still fails to
+build, so the notes for the first release after the move must carry the
+migration to the new import path.
 
 ## Local release validation
 
@@ -111,8 +113,10 @@ gh release create v1.2.3 --verify-tag --title v1.2.3 --notes-file notes.md
 ```
 
 `--verify-tag` refuses to create `v1.2.3` when the first step did not push it.
-A draft starts nothing until it is published, and the workflow skips a
-prerelease.
+The workflow runs on the `released` event, which fires when a full release is
+published or a prerelease is changed to a full release. A draft or a prerelease
+starts nothing. A release published as a prerelease by mistake starts the
+workflow once "Set as a pre-release" is unchecked; nothing needs to be deleted.
 
 Publishing the release runs the release workflow. Before it publishes anything,
 the workflow checks that both tags point to the release's commit and that

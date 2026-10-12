@@ -16,6 +16,7 @@ Always do:
 - Use Conventional Commits: `feat(scope):`, `fix(scope):`, `refactor(scope):`. Match an existing scope from `git log` when possible.
 - Reference an open GitHub issue in the PR.
 - Regenerate manifests after changing API types: `make lib-generate && make lib-manifests`.
+- Ship a recorded e2e flow with every new catalog definition (see Catalog Definitions in `CONTRIBUTING.md`): the recording is how the mapped states are proven, and the replay suite keeps proving them.
 - Use `git mv` when moving files so history is preserved.
 
 Discuss in the PR description:
@@ -70,11 +71,12 @@ One `Makefile` at the repository root is the only one in the repo; there is no p
 
 `make check` is the full Go presubmit and CI runs it verbatim, but CI also runs `helm-lint`, `helm-validate`, `image-lock-verify`, `image-lock-test` and `lint-shell`, so a green `check` alone does not guarantee a green CI. `lint` is read-only; `fmt` and the per-component `fmt-*` targets are the only ones that rewrite files. For a single test use `go test` inside the module's directory.
 
-There is no root Go module and no `go.work`. The library is the `karta/` module.
-`cli`, `operator`, `karta-wasm`, `karta/test/e2e`, and `docs/examples` require it
-at `v0.0.0` with a relative `replace`, so each module builds against the library
-in the same checkout. Run Go commands from a module's directory, not from the
-repository root. Do not add a `go.work`: the Makefile sets `GOWORK=off` for every
+The library is the `karta/` module, and there is no `go.work`. `cli`, `operator`,
+`karta-wasm`, `karta/test/e2e`, and `docs/examples` require it at `v0.0.0` with a
+relative `replace`, so each module builds against the library in the same
+checkout. Run Go commands from a module's directory. The root `go.mod` is a
+deprecation stub for the library's old path: it has no packages, and nothing may
+be added to it. Do not add a `go.work`: the Makefile sets `GOWORK=off` for every
 recipe, so a workspace would change what you build locally but not what CI builds.
 
 ## Code Style
@@ -97,6 +99,7 @@ recipe, so a workspace would change what you build locally but not what CI build
 ### Comments and Markdown
 
 - Self-documenting code; add a comment only when the *why* is non-obvious. No first-person pronouns (`I`, `we`).
+- No ticket, issue, PR or CVE identifiers in code or comments; tracker references go in the PR description.
 - Markdown: short sentences, no bold for emphasis, no emojis, no em-dash (U+2014), ASCII only.
 
 ## Commits and Pull Requests
