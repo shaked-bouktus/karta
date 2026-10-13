@@ -65,7 +65,7 @@ and writes them with plain `GetPodTemplateSpec` / `UpdatePodTemplateSpec` calls.
 - Go (only to build the image)
 
 This example is a standalone module. Its local `replace` directive selects the
-repository library in `karta/`, so the image is built from the repository root.
+repository library in `karta/sdk/`, so the image is built from the repository root.
 
 ## Run it on Kind
 

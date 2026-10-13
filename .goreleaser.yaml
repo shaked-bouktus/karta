@@ -28,7 +28,7 @@ builds:
       - -trimpath
       - -buildvcs=false
     ldflags:
-      - -X github.com/dsx-ai-factory/workload-map/karta/pkg/version.version={{ .Env.VERSION }}
+      - -X github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/version.version={{ .Env.VERSION }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:

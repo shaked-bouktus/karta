@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/dsx-ai-factory/workload-map/karta/test/types"
+	"github.com/dsx-ai-factory/workload-map/karta/sdk/test/types"
 )
 
 func mustMarshalJSON(t *testing.T, value any) string {

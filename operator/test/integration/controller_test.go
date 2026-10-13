@@ -9,7 +9,7 @@ import (
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
-	kartav1alpha1 "github.com/dsx-ai-factory/workload-map/karta/pkg/api/runai/v1alpha1"
+	kartav1alpha1 "github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/api/runai/v1alpha1"
 	"github.com/dsx-ai-factory/workload-map/operator/pkg"
 
 	. "github.com/onsi/ginkgo/v2"

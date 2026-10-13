@@ -6,7 +6,7 @@ on:
   push:
     branches: [ main ]
   # A release runs when its GitHub Release is released, not when its tags are
-  # pushed: vX.Y.Z and karta/vX.Y.Z are pushed first, then the release is
+  # pushed: vX.Y.Z and karta/sdk/vX.Y.Z are pushed first, then the release is
   # published from the existing vX.Y.Z tag. `released` fires when a full
   # release is published or a prerelease is changed to a full release. A draft
   # or a prerelease fires nothing, so a release published as a prerelease by
@@ -34,7 +34,7 @@ jobs:
         with:
           go-version-file: operator/go.mod
           cache-dependency-path: |
-            karta/go.sum
+            karta/sdk/go.sum
             operator/go.sum
             cli/go.sum
             hack/release/go.sum
@@ -104,7 +104,7 @@ jobs:
       - name: Lint and validate helm chart
         run: make helm-lint helm-validate
 
-      # Before anything is published: without the karta/vX.Y.Z tag on this
+      # Before anything is published: without the karta/sdk/vX.Y.Z tag on this
       # commit, the image and chart would ship and only `make release` would fail.
       - name: Validate release version, library module, and release tags
         if: github.event_name == 'release'

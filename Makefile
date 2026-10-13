@@ -17,7 +17,7 @@ VERSION ?= $(shell git describe --tags --always --dirty --match 'v[0-9]*.[0-9]*.
 # Freeze the fallback once so image variables do not rerun it per recipe.
 VERSION := $(VERSION)
 
-VERSION_PKG := github.com/dsx-ai-factory/workload-map/karta/pkg/version
+VERSION_PKG := github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/version
 GO_LDFLAGS  := -X $(VERSION_PKG).version=$(VERSION)
 LDFLAGS     := -ldflags "$(GO_LDFLAGS)"
 
@@ -27,7 +27,7 @@ COMPONENTS := lib cli operator karta-wasm release-helper
 # Every Go module in the repo. The tidy target fans out over this rather than
 # COMPONENTS because an untidy manifest in a module that ships no
 # binary (the examples, the e2e fixtures) still breaks a downstream `go get`.
-GO_MODULES := karta cli karta-wasm operator karta/test/e2e hack/imagelock \
+GO_MODULES := karta/sdk cli karta-wasm operator karta/sdk/test/e2e hack/imagelock \
 	docs/examples/quickstart docs/examples/controller-runtime \
 	hack/e2e/operators/nim/image
 
@@ -158,38 +158,38 @@ install-cli-local: ## Run install-cli into $HOME/.local/bin, which needs no root
 uninstall-cli-local: ## Run uninstall-cli against $HOME/.local/bin
 	$(MAKE) uninstall-cli BINDIR="$(HOME)/.local/bin"
 
-##@ Library (karta module)
+##@ Library (karta/sdk module)
 
 .PHONY: fmt-lib
 fmt-lib: ## Format the library module
-	cd karta && go fmt ./...
+	cd karta/sdk && go fmt ./...
 
 .PHONY: fmt-check-lib
 fmt-check-lib: ## Check library formatting without modifying files
 	@set -e; \
-	cd karta; \
+	cd karta/sdk; \
 	dirs="$$(go list -f '{{.Dir}}' ./...)"; \
 	unformatted="$$(gofmt -l $$dirs)"; \
 	test -z "$$unformatted" || { echo "go fmt required:"; echo "$$unformatted"; exit 1; }
 
 .PHONY: vet-lib
 vet-lib: ## go vet the library module
-	cd karta && go vet ./...
+	cd karta/sdk && go vet ./...
 
 .PHONY: lint-lib
 lint-lib: golangci-lint ## Lint the library module (set VERBOSE=1 for -v)
-	cd karta && $(GOLANGCI_LINT) run $(GOLANGCI_LINT_FLAGS) -c $(PROJECT_DIR)/.golangci.yml
+	cd karta/sdk && $(GOLANGCI_LINT) run $(GOLANGCI_LINT_FLAGS) -c $(PROJECT_DIR)/.golangci.yml
 
 .PHONY: test-lib
 test-lib: lib-generate-mocks ## Run the library tests, plus the offline e2e recorder tests
-	cd karta && go test ./...
-	cd karta/test/e2e && go test ./recorder/...
+	cd karta/sdk && go test ./...
+	cd karta/sdk/test/e2e && go test ./recorder/...
 
 # The library is the one published module, so a replace in it would break every
 # consumer's `go get`. The other modules carry one on purpose.
 .PHONY: modules-check-lib
 modules-check-lib: ## Fail if the library go.mod carries a replace or exclude directive
-	cd $(RELEASE_HELPER_DIR) && go run . check-publishable --modfile $(PROJECT_DIR)/karta/go.mod
+	cd $(RELEASE_HELPER_DIR) && go run . check-publishable --modfile $(PROJECT_DIR)/karta/sdk/go.mod
 
 .PHONY: check-lib
 check-lib: fmt-check-lib vet-lib lint-lib modules-check-lib validate verify-recordings test-lib test-replay ## Full library presubmit
@@ -423,7 +423,7 @@ release-snapshot: goreleaser release-validate ## Build the complete release loca
 release-verify: ## Verify the CLI archives, stamped executable versions, and Homebrew cask in dist/
 	cd $(RELEASE_HELPER_DIR) && go run . verify-artifacts --dist $(DIST_DIR) --version $(VERSION)
 
-# REQUIRE_TAGS=1 also requires vX.Y.Z and karta/vX.Y.Z at HEAD. The release
+# REQUIRE_TAGS=1 also requires vX.Y.Z and karta/sdk/vX.Y.Z at HEAD. The release
 # workflow sets it so a missing library tag fails the run before the operator
 # image and Helm chart are published; local snapshots leave it unset.
 .PHONY: release-validate
@@ -431,7 +431,7 @@ release-validate: ## Validate VERSION and that the library module is publishable
 	cd $(RELEASE_HELPER_DIR) && go run . validate-release --root $(PROJECT_DIR) --version $(VERSION) $(if $(REQUIRE_TAGS),--require-tags)
 
 .PHONY: release
-release: goreleaser ## Publish a guarded release from the vX.Y.Z tag (karta/vX.Y.Z must point to the same commit)
+release: goreleaser ## Publish a guarded release from the vX.Y.Z tag (karta/sdk/vX.Y.Z must point to the same commit)
 	@set -eu; \
 	[ -n "$${GITHUB_TOKEN:-}" ] || { echo "GITHUB_TOKEN is required" >&2; exit 1; }; \
 	[ -n "$${HOMEBREW_TAP_TOKEN:-}" ] || { echo "HOMEBREW_TAP_TOKEN is required" >&2; exit 1; }; \
@@ -463,19 +463,19 @@ headlamp-plugin-build: karta-wasm ## Build the Headlamp plugin (requires Node.js
 
 .PHONY: lib-manifests
 lib-manifests: controller-gen ## Generate CRD manifests
-	cd karta && $(CONTROLLER_GEN) crd paths="./pkg/..." output:crd:artifacts:config=$(KARTA_CRDS_DIR)
+	cd karta/sdk && $(CONTROLLER_GEN) crd paths="./pkg/..." output:crd:artifacts:config=$(KARTA_CRDS_DIR)
 
 .PHONY: lib-generate
 lib-generate: controller-gen ## Generate DeepCopy methods
-	cd karta && $(CONTROLLER_GEN) object paths="./pkg/..."
+	cd karta/sdk && $(CONTROLLER_GEN) object paths="./pkg/..."
 
 .PHONY: lib-generate-mocks
 lib-generate-mocks: ## Generate mocks using go generate
-	cd karta && go generate ./pkg/...
+	cd karta/sdk && go generate ./pkg/...
 
 .PHONY: generate-samples
-generate-samples: ## Regenerate docs/catalog/ from karta/pkg/catalog
-	cd karta && go run ./hack/gen-samples
+generate-samples: ## Regenerate docs/catalog/ from karta/sdk/pkg/catalog
+	cd karta/sdk && go run ./hack/gen-samples
 
 # go mod download skips a module replaced by a local directory, so the library
 # itself never lands in the cli or karta-wasm inventories.
@@ -483,7 +483,7 @@ generate-samples: ## Regenerate docs/catalog/ from karta/pkg/catalog
 generate-licenses: tidy go-licence-detector ## Regenerate NOTICE and THIRD_PARTY_LICENSES from current dependencies
 	@set -eu; \
 	echo "Generating NOTICE and THIRD_PARTY_LICENSES files from current dependencies using go-licence-detector"; \
-	(cd karta && go mod download -json) > $(LOCALBIN)/karta-deps.json; \
+	(cd karta/sdk && go mod download -json) > $(LOCALBIN)/karta-deps.json; \
 	(cd cli && go mod download -json) > $(LOCALBIN)/cli-deps.json; \
 	(cd karta-wasm && go mod download -json) > $(LOCALBIN)/karta-wasm-deps.json; \
 	python3 hack/merge-go-deps.py $(LOCALBIN)/karta-deps.json $(LOCALBIN)/cli-deps.json $(LOCALBIN)/karta-wasm-deps.json > $(LOCALBIN)/deps.json; \
@@ -513,7 +513,7 @@ validate: tidy lib-generate lib-manifests lib-generate-mocks generate-licenses g
 
 .PHONY: download-dependencies
 download-dependencies: ## Pre-warm the module cache for the library module
-	cd karta && go mod download
+	cd karta/sdk && go mod download
 
 ##@ CRDs
 
@@ -597,8 +597,8 @@ endif
 
 .PHONY: test-replay
 test-replay: ## Replay the recorded fixtures through Karta offline (no cluster)
-	cd karta/test/e2e && go build ./...
-	cd karta/test/e2e && go test ./replay_tests/...
+	cd karta/sdk/test/e2e && go build ./...
+	cd karta/sdk/test/e2e && go test ./replay_tests/...
 
 # Defaults and accepted values live in hack/e2e/global.env.
 KARTA_WEBHOOK_MODE ?= auto
@@ -640,13 +640,13 @@ e2e-down: ## Tear down the e2e cluster (set CLUSTER_NAME for a named one)
 record-e2e: ## Record the fixtures against the current cluster - kind from e2e-up or your own (WORKLOADS="pod" a subset, FLOW="running" one flow, CLUSTER_NAME for a named kind cluster)
 	@if [ "$(strip $(WORKLOADS))" = "none" ]; then \
 		echo "record-e2e: WORKLOADS=none selects no cases"; exit 2; fi
-	cd karta/test/e2e && go test -count=1 ./recorder
-	cd karta/test/e2e && CLUSTER_NAME=$(CLUSTER_NAME) $(E2E_KUBECONFIG) go test -count=1 -v -timeout $(E2E_TIMEOUT) ./flows $(if $(E2E_FOCUS)$(E2E_LABELS),-args $(if $(E2E_FOCUS),-ginkgo.focus="$(E2E_FOCUS)") $(if $(E2E_LABELS),-ginkgo.label-filter="$(E2E_LABELS)"))
+	cd karta/sdk/test/e2e && go test -count=1 ./recorder
+	cd karta/sdk/test/e2e && CLUSTER_NAME=$(CLUSTER_NAME) $(E2E_KUBECONFIG) go test -count=1 -v -timeout $(E2E_TIMEOUT) ./flows $(if $(E2E_FOCUS)$(E2E_LABELS),-args $(if $(E2E_FOCUS),-ginkgo.focus="$(E2E_FOCUS)") $(if $(E2E_LABELS),-ginkgo.label-filter="$(E2E_LABELS)"))
 
 .PHONY: verify-recordings
 verify-recordings: ## Fail if any recorded fixture ended with succeeded false (re-record it clean before pushing)
-	@test -d karta/test/e2e/recorded_data || { echo "no karta/test/e2e/recorded_data dir"; exit 1; }
-	@bad=$$(grep -rlE '^  succeeded: false' karta/test/e2e/recorded_data --include='*.yaml'); \
+	@test -d karta/sdk/test/e2e/recorded_data || { echo "no karta/sdk/test/e2e/recorded_data dir"; exit 1; }
+	@bad=$$(grep -rlE '^  succeeded: false' karta/sdk/test/e2e/recorded_data --include='*.yaml'); \
 	if [ -n "$$bad" ]; then echo "recordings that did not succeed:"; echo "$$bad"; exit 1; fi; \
 	echo "all recordings succeeded"
 

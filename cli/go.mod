@@ -21,7 +21,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/dsx-ai-factory/workload-map/karta v0.0.0
+	github.com/dsx-ai-factory/workload-map/karta/sdk v0.0.0
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
@@ -92,4 +92,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
-replace github.com/dsx-ai-factory/workload-map/karta => ../karta
+replace github.com/dsx-ai-factory/workload-map/karta/sdk => ../karta/sdk

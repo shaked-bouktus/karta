@@ -68,14 +68,14 @@ func runValidateRelease(args []string) error {
 	flags := flag.NewFlagSet("validate-release", flag.ContinueOnError)
 	root := flags.String("root", ".", "repository root")
 	version := flags.String("version", "", "normalized release version X.Y.Z")
-	requireTags := flags.Bool("require-tags", false, "require the vX.Y.Z and karta/vX.Y.Z tags at HEAD")
+	requireTags := flags.Bool("require-tags", false, "require the vX.Y.Z and karta/sdk/vX.Y.Z tags at HEAD")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if !semanticVersion.MatchString(*version) {
 		return fmt.Errorf("version %q must match X.Y.Z without a leading v", *version)
 	}
-	if err := checkPublishable(filepath.Join(*root, "karta", "go.mod")); err != nil {
+	if err := checkPublishable(filepath.Join(*root, "karta", "sdk", "go.mod")); err != nil {
 		return err
 	}
 	if *requireTags {
@@ -129,7 +129,7 @@ func validateTags(root, version string) error {
 	if err != nil {
 		return err
 	}
-	for _, tag := range []string{"v" + version, "karta/v" + version} {
+	for _, tag := range []string{"v" + version, "karta/sdk/v" + version} {
 		commit, err := commandOutput("git", "-C", root, "rev-list", "-n", "1", tag)
 		if err != nil {
 			return fmt.Errorf("resolve tag %s: %w", tag, err)

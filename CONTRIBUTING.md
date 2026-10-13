@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2026 NVIDIA Corporation -->
+
 # Contributing to karta
 
 Thank you for your interest in contributing to karta! This document provides guidelines and instructions for contributing to this project.
@@ -76,6 +79,12 @@ For more information about the DCO, please visit: https://developercertificate.o
 3. Every pull request must reference at least one open GitHub issue in its description. This ensures that all changes are tracked and linked to project requirements or bug reports.
 4. For major changes, please open an issue first to discuss the proposed changes
 
+### Design Proposals
+
+For changes that need design agreement before implementation, follow the
+[Karta Enhancement Proposal process](keps/README.md). It describes when to write
+one and provides a template.
+
 ### Development Environment Setup
 
 Karta is a Go project. To set up a local environment:
@@ -117,7 +126,7 @@ make help              # every target, grouped
 every supported development host. The operator e2e suite is compiled during
 `make check`; its live cluster run remains a separate target.
 
-There is no Go workspace. The library is the `karta/` module, and the CLI,
+There is no Go workspace. The library is the `karta/sdk/` module, and the CLI,
 operator, and other modules reach it through a relative `replace` directive in
 their own `go.mod`. Run Go commands from a module's directory, for example
 `cd karta && go test ./pkg/...`. The root `go.mod` only marks the library's old
@@ -187,14 +196,14 @@ recording is a claim; the recording is the evidence.
 
 Adding one means, in order:
 
-1. The builder under `karta/pkg/catalog/kartas/`, registered in
-   `karta/pkg/catalog/catalog.go`, then `make generate-samples` for the generated
+1. The builder under `karta/sdk/pkg/catalog/kartas/`, registered in
+   `karta/sdk/pkg/catalog/catalog.go`, then `make generate-samples` for the generated
    file under `docs/catalog/`. Never hand-edit the generated file. Add the
    workload to the Pre-built Karta Definitions table in `README.md`, unless it
    is a Kubernetes builtin (apps, batch, core): the table lists operator-backed
    kinds only.
-2. A flow under `karta/test/e2e/flows/` with its workload manifests under
-   `karta/test/e2e/flows/testdata/<workload>/`. See `karta/test/e2e/recorder/README.md`.
+2. A flow under `karta/sdk/test/e2e/flows/` with its workload manifests under
+   `karta/sdk/test/e2e/flows/testdata/<workload>/`. See `karta/sdk/test/e2e/recorder/README.md`.
    - Flow: record every mapped state, and each spec value a rule branches on
      (a StatefulSet's `OnDelete`, paused, a partition, a restart policy), that
      the kind's webhook accepts and a kind cluster can reach. Name the rest
@@ -230,7 +239,7 @@ Adding one means, in order:
      for the label, the directory, the object names, and the root component
      name alike.
 3. The recorded fixtures from a live run, committed under
-   `karta/test/e2e/recorded_data/<operator>/<version>/<kartaName>/`:
+   `karta/sdk/test/e2e/recorded_data/<operator>/<version>/<kartaName>/`:
 
    ```sh
    make e2e-up CLUSTER_NAME=<name> WORKLOADS=<operator>
@@ -260,7 +269,7 @@ Adding one means, in order:
    overlap, and since they mirror the status rules, karta-verify on that frame
    shows whether the rules overlap too.
 4. `make test-replay` and `make verify-recordings` green. `make lint-shell`
-   green, and `GOWORK=off go vet ./...` and `gofmt -l .` clean in `karta/test/e2e`;
+   green, and `GOWORK=off go vet ./...` and `gofmt -l .` clean in `karta/sdk/test/e2e`;
    `make check` covers none of these three. Commit the new files before
    `make check`: the `validate` target treats untracked files as stale
    generator output.
@@ -280,8 +289,8 @@ This is the same model used by [ai-dynamo/grove](https://github.com/ai-dynamo/gr
 
 ### Releasing
 
-A release tags the product as `vX.Y.Z` and the `karta/` library module as
-`karta/vX.Y.Z` on the same commit, then publishes the GitHub Release for
+A release tags the product as `vX.Y.Z` and the `karta/sdk/` library module as
+`karta/sdk/vX.Y.Z` on the same commit, then publishes the GitHub Release for
 `vX.Y.Z`, which starts the release workflow. The two-tag convention, local
 snapshot, guarded release command, Homebrew cask pull request, credentials, and
 recovery procedure are documented in [RELEASE.md](RELEASE.md).

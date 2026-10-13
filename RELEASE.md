@@ -34,7 +34,7 @@ machine.
 
 The library is the only published Go module:
 
-- `github.com/dsx-ai-factory/workload-map/karta`, in `karta/`
+- `github.com/dsx-ai-factory/workload-map/karta/sdk`, in `karta/sdk/`
 
 The CLI, operator, and the other modules in the repository require it at
 `v0.0.0` with a relative `replace` directive, so they always build against the
@@ -43,13 +43,13 @@ the GoReleaser archives on the GitHub Release, and the operator ships as a
 container image. `go install` of the CLI is not supported, because the go
 command refuses a module whose `go.mod` carries a `replace`.
 
-Release `1.2.3` uses the tags `v1.2.3` and `karta/v1.2.3`, and both must point
+Release `1.2.3` uses the tags `v1.2.3` and `karta/sdk/v1.2.3`, and both must point
 to the same commit. `v1.2.3` names the GitHub Release, the operator image, the
-Helm chart, and the CLI archives. `karta/v1.2.3` is the library's Go
-module version; the go command requires the `karta/` prefix for a module that
+Helm chart, and the CLI archives. `karta/sdk/v1.2.3` is the library's Go
+module version; the go command requires the `karta/sdk/` prefix for a module that
 lives in a subdirectory.
 
-`karta/go.mod` must never carry a `replace` or `exclude` directive. Both apply
+`karta/sdk/go.mod` must never carry a `replace` or `exclude` directive. Both apply
 only when the module is the one being built, so a consumer's `go get` would
 resolve a different dependency graph than the repository tests.
 `make modules-check-lib` enforces this in `make check`, and the release guard
@@ -97,8 +97,8 @@ operation:
 
 ```bash
 git tag -m "v1.2.3" v1.2.3
-git tag -m "karta/v1.2.3" karta/v1.2.3
-git push --atomic origin v1.2.3 karta/v1.2.3
+git tag -m "karta/sdk/v1.2.3" karta/sdk/v1.2.3
+git push --atomic origin v1.2.3 karta/sdk/v1.2.3
 ```
 
 Pushing the tags starts no workflow. With `--atomic`, the remote accepts both
@@ -120,7 +120,7 @@ workflow once "Set as a pre-release" is unchecked; nothing needs to be deleted.
 
 Publishing the release runs the release workflow. Before it publishes anything,
 the workflow checks that both tags point to the release's commit and that
-`karta/go.mod` carries no `replace` or `exclude` directive. It also runs `make
+`karta/sdk/go.mod` carries no `replace` or `exclude` directive. It also runs `make
 release-snapshot` and `make release-verify`, a dry run of the CLI release that
 stops a release whose archives or cask would be wrong. It then builds and
 pushes the multi-architecture operator image from source and publishes the Helm
@@ -147,7 +147,7 @@ make release VERSION=1.2.3
 ```
 
 It fails unless the checkout is clean and at the matching `vX.Y.Z` tag, both
-tags point to `HEAD`, `karta/go.mod` carries no `replace` or `exclude`
+tags point to `HEAD`, `karta/sdk/go.mod` carries no `replace` or `exclude`
 directive, and both `GITHUB_TOKEN` and `HOMEBREW_TAP_TOKEN` are set. It must
 normally run only in the release workflow.
 

@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"os"
 
-	kartav1alpha1 "github.com/dsx-ai-factory/workload-map/karta/pkg/api/runai/v1alpha1"
-	"github.com/dsx-ai-factory/workload-map/karta/pkg/version"
+	kartav1alpha1 "github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/api/runai/v1alpha1"
+	"github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/version"
 	"github.com/dsx-ai-factory/workload-map/operator/pkg"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"

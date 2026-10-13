@@ -11,12 +11,12 @@
 > `github.com/dsx-ai-factory/workload-map`; update any pinned `go get` or import
 > paths, GitHub Actions, webhooks, or other automation that reference
 > `run-ai/karta` or `dsx-ai-factory/karta`. After v0.2.x the library moves again,
-> into the nested module `github.com/dsx-ai-factory/workload-map/karta`.
+> into the nested module `github.com/dsx-ai-factory/workload-map/karta/sdk`.
 
 **A standard way to describe the structure of any Kubernetes workload type.**
 
 [![CI](https://github.com/dsx-ai-factory/workload-map/actions/workflows/ci.yaml/badge.svg)](https://github.com/dsx-ai-factory/workload-map/actions/workflows/ci.yaml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/dsx-ai-factory/workload-map/karta.svg)](https://pkg.go.dev/github.com/dsx-ai-factory/workload-map/karta)
+[![Go Reference](https://pkg.go.dev/badge/github.com/dsx-ai-factory/workload-map/karta/sdk.svg)](https://pkg.go.dev/github.com/dsx-ai-factory/workload-map/karta/sdk)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dsx-ai-factory/workload-map)](https://goreportcard.com/report/github.com/dsx-ai-factory/workload-map)
 [![Latest release](https://img.shields.io/github/v/release/dsx-ai-factory/workload-map)](https://github.com/dsx-ai-factory/workload-map/releases)
 [![License](https://img.shields.io/github/license/dsx-ai-factory/workload-map)](LICENSE)
@@ -136,14 +136,14 @@ kubectl apply -f https://raw.githubusercontent.com/dsx-ai-factory/workload-map/m
 ### Use the Go library
 
 ```bash
-go get github.com/dsx-ai-factory/workload-map/karta@latest
+go get github.com/dsx-ai-factory/workload-map/karta/sdk@latest
 ```
 
-The library lives in the `karta/` module. Releases up to v0.2.x published it as
+The library lives in the `karta/sdk/` module. Releases up to v0.2.x published it as
 `github.com/dsx-ai-factory/workload-map`. To move to the new path, require
-`github.com/dsx-ai-factory/workload-map/karta` and rewrite imports from
+`github.com/dsx-ai-factory/workload-map/karta/sdk` and rewrite imports from
 `github.com/dsx-ai-factory/workload-map/pkg/...` to
-`github.com/dsx-ai-factory/workload-map/karta/pkg/...`.
+`github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/...`.
 
 ### Define a Karta
 
@@ -196,7 +196,7 @@ spec:
 ### Extract workload information
 
 ```go
-import "github.com/dsx-ai-factory/workload-map/karta/pkg/resource"
+import "github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/resource"
 
 // Create a factory from your Karta and workload object
 factory := resource.NewComponentFactoryFromObject(karta, jobSetObject)
@@ -256,6 +256,7 @@ Karta supports any workload type. The following are pre-built and tested Karta d
 | RayJob | Ray |
 | RayService | Ray |
 | InferenceService | KServe |
+| LLMInferenceService | KServe |
 | Knative Service | Knative |
 | MPIJob | Kubeflow |
 | NIM Service | NVIDIA |
@@ -264,6 +265,7 @@ Karta supports any workload type. The following are pre-built and tested Karta d
 | Milvus | Milvus |
 | DynamoGraphDeployment | NVIDIA Dynamo |
 | PodCliqueSet | Grove |
+| Sandbox | Kubernetes Agent Sandbox |
 
 See [`docs/catalog/`](docs/catalog/) for the full Karta definitions.
 

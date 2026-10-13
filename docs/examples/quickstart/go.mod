@@ -12,7 +12,7 @@ require (
 )
 
 require (
-	github.com/dsx-ai-factory/workload-map/karta v0.0.0
+	github.com/dsx-ai-factory/workload-map/karta/sdk v0.0.0
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/itchyny/gojq v0.12.19 // indirect
@@ -38,4 +38,4 @@ require (
 // replace points to the repository's karta module so the example can be run
 // directly from the repo without publishing a release first.
 // Remove this directive and pin a released version when using outside the repo.
-replace github.com/dsx-ai-factory/workload-map/karta => ../../../karta
+replace github.com/dsx-ai-factory/workload-map/karta/sdk => ../../../karta/sdk

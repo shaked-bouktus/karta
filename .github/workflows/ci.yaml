@@ -32,10 +32,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: 'karta/go.mod'
+          go-version-file: 'karta/sdk/go.mod'
           cache: true
           cache-dependency-path: |
-            karta/go.sum
+            karta/sdk/go.sum
             operator/go.sum
             cli/go.sum
             hack/release/go.sum
@@ -55,7 +55,7 @@ jobs:
             bin/goreleaser-*
             bin/setup-envtest-*
             bin/k8s
-          key: ${{ runner.os }}-tools-v1-${{ hashFiles('Makefile') }}-${{ hashFiles('karta/go.mod') }}
+          key: ${{ runner.os }}-tools-v1-${{ hashFiles('Makefile') }}-${{ hashFiles('karta/sdk/go.mod') }}
           restore-keys: |
             ${{ runner.os }}-tools-v1-${{ hashFiles('Makefile') }}-
             ${{ runner.os }}-tools-v1-
@@ -101,10 +101,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: 'karta/go.mod'
+          go-version-file: 'karta/sdk/go.mod'
           cache: true
           cache-dependency-path: |
-            karta/go.sum
+            karta/sdk/go.sum
             operator/go.sum
 
       - name: Read pinned tool versions
@@ -157,7 +157,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: 'karta/go.mod'
+          go-version-file: 'karta/sdk/go.mod'
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
