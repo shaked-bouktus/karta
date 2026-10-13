@@ -7,9 +7,10 @@
 # main with the Write role as a bypass actor. Round 2 runs against the scratch
 # branch probe-main with the github-actions[bot] user as a bypass actor.
 name: Probe - direct commit to a protected branch with GITHUB_TOKEN
+# Neutralized after the probe: manual-only so a push can never auto-fire it
+# against a branch again (that is how it once hit an unprotected main).
 on:
-  push:
-    branches: [ canary/git-push-probe ]
+  workflow_dispatch:
 
 permissions:
   contents: write
