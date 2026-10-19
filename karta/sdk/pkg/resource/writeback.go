@@ -107,6 +107,11 @@ func (v resourceClaimsValue) keyedList() (corev1.PodSpec, string) {
 // the declared path resolves to the object root.
 var identityKeys = []string{"apiVersion", "kind", "status"}
 
+// optionalWrappers are corev1 structures a stored pod template may omit
+// entirely (a nil affinity, an empty template metadata). A fragmented field
+// under one of them belongs to the component above the wrapper.
+var optionalWrappers = map[string]bool{"affinity": true, "metadata": true}
+
 // mergeWrite sets the projection at path to exactly the supplied values, as a
 // single staged plan. See writePlan.stage for the write semantics.
 func (a *Accessor) mergeWrite(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, values []any, schema any) error {
@@ -210,9 +215,10 @@ func (p *writePlan) stage(ctx context.Context, definition v1alpha1.ComponentDefi
 // absent pod spec overlay, nodeAffinity under a missing affinity) but never
 // create the root itself (the Worker of a Master-only job). For a template,
 // pod spec or metadata definition the root is the fragment's parent. For a
-// fragmented definition it is the deepest location all its paths share, or the
-// parent of a lone path. Paths that compute a value or resolve a different
-// number of instances are ignored. Cached per instance count.
+// fragmented definition each field belongs to its parent less any optional
+// wrapper (fieldRoot), and the root is the deepest location those share.
+// Paths that compute a value or resolve a different number of instances are
+// ignored. Cached per instance count.
 func (p *writePlan) componentRoots(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, paths [][]any) [][]any {
 	if roots, ok := p.roots[len(paths)]; ok {
 		return roots
@@ -254,13 +260,11 @@ func (p *writePlan) componentRoots(ctx context.Context, definition v1alpha1.Comp
 	}
 	roots := make([][]any, len(paths))
 	for i := range paths {
-		root := paths[i]
-		if len(aligned) == 1 && len(root) > 0 {
-			root = root[:len(root)-1]
-		}
+		root := fieldRoot(paths[i])
 		for _, locations := range aligned {
+			other := fieldRoot(locations[i])
 			shared := 0
-			for shared < len(root) && shared < len(locations[i]) && root[shared] == locations[i][shared] {
+			for shared < len(root) && shared < len(other) && root[shared] == other[shared] {
 				shared++
 			}
 			root = root[:shared]
@@ -268,6 +272,18 @@ func (p *writePlan) componentRoots(ctx context.Context, definition v1alpha1.Comp
 		roots[i] = root
 	}
 	return p.cacheRoots(len(paths), roots)
+}
+
+// fieldRoot is the location a fragmented field belongs to: its parent, less an
+// optional wrapper the stored object may omit.
+func fieldRoot(location []any) []any {
+	root := location[:max(len(location)-1, 0)]
+	if len(root) > 0 {
+		if wrapper, ok := root[len(root)-1].(string); ok && optionalWrappers[wrapper] {
+			root = root[:len(root)-1]
+		}
+	}
+	return root
 }
 
 func (p *writePlan) cacheRoots(instances int, roots [][]any) [][]any {
@@ -472,9 +488,6 @@ func mergeFragment(fragment any, value any, schema any) (merged any, changed boo
 	if err != nil {
 		return nil, false, fmt.Errorf("marshal supplied value: %w", err)
 	}
-	if err := rejectDirectiveKeys(newJSON); err != nil {
-		return nil, false, err
-	}
 	if schema == nil {
 		return mergePlain(fragment, newJSON)
 	}
@@ -508,6 +521,9 @@ func mergeStrategic(fragment any, newJSON []byte, schema any) (any, bool, error)
 	}
 	if bytes.Equal(baselineJSON, newJSON) {
 		return nil, false, nil
+	}
+	if err := rejectDirectiveKeys(newJSON); err != nil {
+		return nil, false, err
 	}
 	var baseline, supplied map[string]any
 	if err := json.Unmarshal(baselineJSON, &baseline); err != nil {
@@ -573,6 +589,9 @@ func mergePlain(fragment any, newJSON []byte) (any, bool, error) {
 	if reflect.DeepEqual(fragment, value) {
 		return nil, false, nil
 	}
+	if err := rejectDirectiveKeys(newJSON); err != nil {
+		return nil, false, err
+	}
 	return value, true, nil
 }
 
@@ -622,7 +641,7 @@ func guardIdentity(current any, merged any) error {
 	}
 	currentMeta, _ := currentMap["metadata"].(map[string]any)
 	mergedMeta, _ := mergedMap["metadata"].(map[string]any)
-	for _, key := range []string{"name", "uid"} {
+	for _, key := range []string{"name", "namespace", "uid"} {
 		if !reflect.DeepEqual(currentMeta[key], mergedMeta[key]) {
 			return fmt.Errorf("%w: root write would change 'metadata.%s'", ErrIdentityChange, key)
 		}
@@ -630,15 +649,18 @@ func guardIdentity(current any, merged any) error {
 	return nil
 }
 
-// rejectDirectiveKeys refuses values carrying strategic-merge directives as
-// literal keys, which the merge would interpret instead of storing.
+// rejectDirectiveKeys refuses a changed value carrying one of the four keys
+// strategicpatch interprets instead of storing ($patch, $retainKeys,
+// $setElementOrder/<field>, $deleteFromPrimitiveList/<field>). Any other key
+// starting with "$" is data: CSI volume attributes use such names.
 func rejectDirectiveKeys(valueJSON []byte) error {
 	var value any
 	if err := json.Unmarshal(valueJSON, &value); err != nil {
 		return fmt.Errorf("decode supplied value: %w", err)
 	}
 	return walkKeys(value, func(key string) error {
-		if strings.HasPrefix(key, "$") {
+		if key == "$patch" || key == "$retainKeys" ||
+			strings.HasPrefix(key, "$setElementOrder/") || strings.HasPrefix(key, "$deleteFromPrimitiveList/") {
 			return fmt.Errorf("%w: '%s'", ErrDirectiveKey, key)
 		}
 		return nil

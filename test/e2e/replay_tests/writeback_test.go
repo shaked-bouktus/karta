@@ -516,13 +516,18 @@ func replayWrites(ctx context.Context, path string, injectUnknown bool, tEdit te
 		Expect(after.GetNamespace()).To(Equal(before.GetNamespace()), state)
 		Expect(after.GetResourceVersion()).To(Equal(before.GetResourceVersion()), state)
 
-		// Every change sits inside a fragment the written components own.
+		// Every change sits inside a fragment the written components own. Both
+		// objects are re-decoded from JSON so the diff compares like with like
+		// (the recording decodes numbers as int64, the write path as float64).
 		var allowed [][]any
 		for _, comp := range written {
 			allowed = append(allowed, locations[comp.Name()].all...)
 		}
-		for _, changed := range changedPaths(nil, before.Object, after.Object) {
-			Expect(withinFragments(changed, before.Object, after.Object, allowed)).To(BeTrue(),
+		var beforeDecoded, afterDecoded map[string]any
+		Expect(json.Unmarshal([]byte(beforeJSON), &beforeDecoded)).To(Succeed())
+		Expect(json.Unmarshal([]byte(afterJSON), &afterDecoded)).To(Succeed())
+		for _, changed := range changedPaths(nil, beforeDecoded, afterDecoded) {
+			Expect(withinFragments(changed, beforeDecoded, afterDecoded, allowed)).To(BeTrue(),
 				"%s: change at %v is outside the written fragments %v", state, changed, allowed)
 		}
 
@@ -673,7 +678,9 @@ func markContainerList(list []any) {
 	}
 }
 
-// changedPaths lists every leaf location where before and after differ.
+// changedPaths lists every leaf location where before and after differ. Both
+// sides must come from one JSON decoding so number types agree; a key whose
+// value is null counts as present.
 func changedPaths(prefix []any, before, after any) [][]any {
 	switch b := before.(type) {
 	case map[string]any:
@@ -683,7 +690,12 @@ func changedPaths(prefix []any, before, after any) [][]any {
 		}
 		var out [][]any
 		for key := range b {
-			out = append(out, changedPaths(append(append([]any{}, prefix...), key), b[key], a[key])...)
+			value, present := a[key]
+			if !present {
+				out = append(out, append(append([]any{}, prefix...), key))
+				continue
+			}
+			out = append(out, changedPaths(append(append([]any{}, prefix...), key), b[key], value)...)
 		}
 		for key := range a {
 			if _, seen := b[key]; !seen {
@@ -709,7 +721,7 @@ func changedPaths(prefix []any, before, after any) [][]any {
 		}
 		return out
 	default:
-		if fmt.Sprint(before) != fmt.Sprint(after) {
+		if fmt.Sprintf("%T %v", before, before) != fmt.Sprintf("%T %v", after, after) {
 			return [][]any{append([]any{}, prefix...)}
 		}
 		return nil

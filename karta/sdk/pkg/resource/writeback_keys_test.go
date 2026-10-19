@@ -194,6 +194,52 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 		expectObject(accessor, want)
 	})
 
+	// Kubernetes accepts two ports with the same containerPort and protocol when
+	// their names differ, and two constraints with the same key and policy. The
+	// occurrence index applies on top of the declared two-field identity.
+	Context("entries that repeat their full declared identity", func() {
+		storedPorts := `[{"containerPort":80,"protocol":"TCP","name":"http","vendorExtension":"first"},{"containerPort":80,"protocol":"TCP","name":"alias","vendorExtension":"second"}]`
+		withPorts := func(ports string) map[string]any {
+			return decode(`{"spec":{"containers":[{"name":"main","image":"app:v1","ports":` + ports + `}]}}`)
+		}
+
+		DescribeTable("ports sharing containerPort and protocol merge per occurrence",
+			func(mutate func(*corev1.PodSpec), wantPorts string) {
+				accessor := NewAccessor(execution.NewDefaultRunner(withPorts(storedPorts)))
+
+				specs, err := accessor.ExtractPodSpec(ctx, podSpecDefinition)
+				Expect(err).NotTo(HaveOccurred())
+				mutate(&specs[0])
+
+				Expect(accessor.UpdatePodSpec(ctx, podSpecDefinition, specs)).To(Succeed())
+				expectObject(accessor, withPorts(wantPorts))
+			},
+			Entry("the second entry renamed, unknown fields stay",
+				func(s *corev1.PodSpec) { s.Containers[0].Ports[1].Name = "renamed" },
+				`[{"containerPort":80,"protocol":"TCP","name":"http","vendorExtension":"first"},{"containerPort":80,"protocol":"TCP","name":"renamed","vendorExtension":"second"}]`),
+			Entry("the first entry removed, the resized group is written as supplied",
+				func(s *corev1.PodSpec) { s.Containers[0].Ports = s.Containers[0].Ports[1:] },
+				`[{"containerPort":80,"protocol":"TCP","name":"alias"}]`),
+			Entry("a reorder keeps unknown fields by occurrence",
+				func(s *corev1.PodSpec) {
+					s.Containers[0].Ports[0], s.Containers[0].Ports[1] = s.Containers[0].Ports[1], s.Containers[0].Ports[0]
+				},
+				`[{"containerPort":80,"protocol":"TCP","name":"alias","vendorExtension":"first"},{"containerPort":80,"protocol":"TCP","name":"http","vendorExtension":"second"}]`),
+		)
+
+		It("edits the second of two constraints sharing key and policy", func() {
+			object := decode(`{"spec":{"containers":[{"name":"main","image":"app:v1"}],"topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"zone","whenUnsatisfiable":"ScheduleAnyway","vendorExtension":"a"},{"maxSkew":2,"topologyKey":"zone","whenUnsatisfiable":"ScheduleAnyway","vendorExtension":"b"}]}}`)
+			accessor := NewAccessor(execution.NewDefaultRunner(object))
+
+			specs, err := accessor.ExtractPodSpec(ctx, podSpecDefinition)
+			Expect(err).NotTo(HaveOccurred())
+			specs[0].TopologySpreadConstraints[1].MaxSkew = 3
+
+			Expect(accessor.UpdatePodSpec(ctx, podSpecDefinition, specs)).To(Succeed())
+			expectObject(accessor, decode(`{"spec":{"containers":[{"name":"main","image":"app:v1"}],"topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"zone","whenUnsatisfiable":"ScheduleAnyway","vendorExtension":"a"},{"maxSkew":3,"topologyKey":"zone","whenUnsatisfiable":"ScheduleAnyway","vendorExtension":"b"}]}}`))
+		})
+	})
+
 	// Every keyed list follows the env rules: identity is the key plus its
 	// occurrence, and a key whose count changes is written as supplied.
 	Context("keyed lists other than env that repeat a key", func() {

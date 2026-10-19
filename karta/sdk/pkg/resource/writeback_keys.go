@@ -21,20 +21,25 @@ type keyedList struct {
 
 // transformCompositeKeys gives every keyed list of the schema an identity
 // strategic merge can match on, on private copies; the keys are restored after
-// the merge. Ports and topology spread constraints use the two fields
-// server-side apply declares. Every other list is keyed by its merge key plus
-// occurrence, since a stored object may repeat a key (two env definitions of
-// PATH), and that keeps each entry editable with its unknown fields.
+// the merge. The identity is the merge key, the second field server-side apply
+// declares where there is one (ports, topology spread constraints), and the
+// occurrence of that pair, since a stored object may repeat it (two env
+// definitions of PATH, two 80/TCP ports with different names) and each entry
+// must stay editable with its unknown fields.
 func transformCompositeKeys(object map[string]any, schema any, restore bool) error {
 	return walkKeyedLists(reflect.TypeOf(schema), object, func(list []any, keyed keyedList) error {
-		qualify, ok := declaredQualifier(keyed.elem)
-		if !ok {
-			occurrences := map[string]int{}
-			qualify = func(item map[string]any) any {
-				identity := fmt.Sprint(item[keyed.key])
-				occurrences[identity]++
-				return occurrences[identity] - 1
+		declared, hasDeclared := declaredQualifier(keyed.elem)
+		occurrences := map[string]int{}
+		qualify := func(item map[string]any) any {
+			group := fmt.Sprint(item[keyed.key])
+			if !hasDeclared {
+				occurrences[group]++
+				return occurrences[group] - 1
 			}
+			second := declared(item)
+			group = fmt.Sprint(group, "/", second)
+			occurrences[group]++
+			return []any{second, occurrences[group] - 1}
 		}
 		return transformListKeys(list, keyed.key, restore, qualify)
 	})

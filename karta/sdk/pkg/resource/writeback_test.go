@@ -229,14 +229,93 @@ var _ = Describe("write-back", func() {
 			Expect(err).To(MatchError(ErrDirectiveKey))
 		})
 
+		// Only the directives strategic merge interprets are refused. A key that
+		// merely starts with a dollar sign is data: CSI drivers take such volume
+		// attributes, and Kubernetes keeps them across an update.
+		// Namespace is object identity like name and uid; the apiserver rejects a
+		// move. A Pod read as its own template must not be moved or unscoped.
+		DescribeTable("refuses a root write that changes or drops the namespace",
+			func(namespace string) {
+				var object map[string]any
+				Expect(json.Unmarshal([]byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"demo","namespace":"team-a","uid":"6f1c"},"spec":{"containers":[{"name":"main","image":"app:v1"}]}}`), &object)).To(Succeed())
+				want := deepCopyMap(object)
+				accessor := newAccessor(object)
+				definition := v1alpha1.ComponentDefinition{
+					Name:           "pod",
+					SpecDefinition: &v1alpha1.SpecDefinition{PodTemplateSpecPath: ptr.To(".")},
+				}
+
+				templates, err := accessor.ExtractPodTemplateSpec(ctx, definition)
+				Expect(err).NotTo(HaveOccurred())
+				templates[0].Namespace = namespace
+
+				err = accessor.UpdatePodTemplateSpec(ctx, definition, templates)
+				Expect(err).To(MatchError(ErrIdentityChange))
+				got, err := accessor.GetObject()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(got).To(Equal(want))
+			},
+			Entry("moved to another namespace", "team-b"),
+			Entry("namespace removed", ""),
+		)
+
+		It("accepts stored keys that only look like directives (CSI volume attributes)", func() {
+			var object map[string]any
+			Expect(json.Unmarshal([]byte(`{"spec":{"containers":[{"name":"main","image":"app:v1"}],"volumes":[{"name":"data","csi":{"driver":"example.csi.k8s.io","volumeAttributes":{"$vendor":"keep"}}}]}}`), &object)).To(Succeed())
+			want := deepCopyMap(object)
+			accessor := newAccessor(object)
+			definition := v1alpha1.ComponentDefinition{
+				Name:           "pod",
+				SpecDefinition: &v1alpha1.SpecDefinition{PodSpecPath: ptr.To(".spec")},
+			}
+
+			specs, err := accessor.ExtractPodSpec(ctx, definition)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(accessor.UpdatePodSpec(ctx, definition, specs)).To(Succeed(), "an unchanged write is a no-op")
+			got, err := accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(want))
+
+			specs[0].SchedulerName = "kai-scheduler"
+			Expect(accessor.UpdatePodSpec(ctx, definition, specs)).To(Succeed())
+			want["spec"].(map[string]any)["schedulerName"] = "kai-scheduler"
+			got, err = accessor.GetObject()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(want), "the attribute must survive an unrelated edit")
+		})
+
+		DescribeTable("refuses every directive strategic merge interprets",
+			func(key string) {
+				accessor := newAccessor(podObject())
+				definition := v1alpha1.ComponentDefinition{
+					Name:           "pod",
+					SpecDefinition: &v1alpha1.SpecDefinition{MetadataPath: ptr.To(".metadata")},
+				}
+				err := accessor.UpdatePodMetadata(ctx, definition, []metav1.ObjectMeta{{
+					Name:   "web-1",
+					Labels: map[string]string{"app": "web", key: "x"},
+				}})
+				Expect(err).To(MatchError(ErrDirectiveKey))
+			},
+			Entry("$patch", "$patch"),
+			Entry("$retainKeys", "$retainKeys"),
+			Entry("$setElementOrder/<field>", "$setElementOrder/env"),
+			Entry("$deleteFromPrimitiveList/<field>", "$deleteFromPrimitiveList/args"),
+		)
+
 		It("refuses a root write that would change the object's identity", func() {
-			current := map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "a"}}
-			merged := map[string]any{"kind": "Job", "metadata": map[string]any{"name": "a"}}
+			current := map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "a", "namespace": "team-a"}}
+			merged := map[string]any{"kind": "Job", "metadata": map[string]any{"name": "a", "namespace": "team-a"}}
 			Expect(guardIdentity(current, merged)).To(MatchError(ErrIdentityChange))
 			Expect(guardIdentity(current, merged)).To(MatchError(ContainSubstring("kind")))
 
-			renamed := map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "b"}}
+			renamed := map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "b", "namespace": "team-a"}}
 			Expect(guardIdentity(current, renamed)).To(MatchError(ContainSubstring("metadata.name")))
+
+			moved := map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "a", "namespace": "team-b"}}
+			Expect(guardIdentity(current, moved)).To(MatchError(ContainSubstring("metadata.namespace")))
+			unscoped := map[string]any{"kind": "Pod", "metadata": map[string]any{"name": "a"}}
+			Expect(guardIdentity(current, unscoped)).To(MatchError(ContainSubstring("metadata.namespace")))
 
 			Expect(guardIdentity(current, current)).To(Succeed())
 		})
@@ -667,6 +746,23 @@ var _ = Describe("write-back", func() {
 				`{"spec":{"components":{"standalone":{"replicas":1}}}}`,
 				v1alpha1.FragmentedPodSpecDefinition{SchedulerNamePath: ptr.To(".spec.components.proxy.schedulerName"), LabelsPath: ptr.To(".spec.components.proxy.podLabels"), ResourcesPath: ptr.To(".spec.components.proxy.resources")},
 				func(f *FragmentedPodSpec) { f.SchedulerName = "kai-scheduler" }, ErrFragmentAbsent),
+			// affinity and template metadata are optional wrappers a stored pod
+			// template may omit; a fragment under them belongs to the template.
+			Entry("a lone node affinity path under an absent affinity (Deployment shape)",
+				`{"spec":{"template":{"spec":{"containers":[{"name":"main","image":"app:v1"}]}}}}`,
+				v1alpha1.FragmentedPodSpecDefinition{NodeAffinityPath: ptr.To(".spec.template.spec.affinity.nodeAffinity")},
+				func(f *FragmentedPodSpec) {
+					f.NodeAffinity = &corev1.NodeAffinity{RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{{Key: "gpu", Operator: corev1.NodeSelectorOpExists}}}},
+					}}
+				}, nil),
+			Entry("labels and annotations under an absent template metadata (CronJob shape)",
+				`{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"containers":[{"name":"main","image":"app:v1"}]}}}}}}`,
+				v1alpha1.FragmentedPodSpecDefinition{LabelsPath: ptr.To(".spec.jobTemplate.spec.template.metadata.labels"), AnnotationsPath: ptr.To(".spec.jobTemplate.spec.template.metadata.annotations")},
+				func(f *FragmentedPodSpec) {
+					f.Labels = map[string]string{"karta.test/managed": "true"}
+					f.Annotations = map[string]string{"karta.test/queue": "team-a"}
+				}, nil),
 		)
 
 		It("reports a fragment the definition has no path for as DefinitionNotFoundError", func() {
