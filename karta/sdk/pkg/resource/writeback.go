@@ -19,29 +19,23 @@ import (
 	"github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/jq/execution"
 )
 
-// Causes a refused write wraps, for callers to branch on with errors.Is.
+// Causes a refused write wraps, for errors.Is.
 var (
-	// ErrFragmentShape: the stored fragment does not decode into the
-	// projection type, or holds a list the merge cannot process (a null entry).
+	// ErrFragmentShape: the stored fragment does not decode or holds a null entry.
 	ErrFragmentShape = errors.New("stored fragment does not fit the projection type")
-	// ErrReadBackMismatch: the merge cannot express the change, so the merged
-	// fragment would not read back as the supplied value.
+	// ErrReadBackMismatch: the merge cannot express the change.
 	ErrReadBackMismatch = errors.New("merged fragment reads back differently than the supplied value")
 	// ErrConflictingWrites: two views of one value carry different changes.
 	ErrConflictingWrites = errors.New("conflicting writes to the same value")
-	// ErrIdentityChange: a write at the object root would change what the
-	// object is.
+	// ErrIdentityChange: a root write would change what the object is.
 	ErrIdentityChange = errors.New("write would change the object identity")
-	// ErrDirectiveKey: a supplied value carries a strategic merge directive as
-	// a literal key, which the merge would interpret instead of storing.
+	// ErrDirectiveKey: a value carries a key strategic merge would interpret.
 	ErrDirectiveKey = errors.New("value carries a strategic merge directive key")
-	// ErrFragmentAbsent: the object does not store the component instance the
-	// write addresses, so the write would create it from a zero projection.
+	// ErrFragmentAbsent: the write would create a component the object lacks.
 	ErrFragmentAbsent = errors.New("object does not store the fragment, the write would create it")
 )
 
-// WriteError reports a refused update. Nothing was written. Err wraps one of
-// the Err* causes above, or an internal encoding failure.
+// WriteError reports a refused update. Nothing was written.
 type WriteError struct {
 	Path string
 	Err  error
@@ -55,8 +49,7 @@ func (e *WriteError) Unwrap() error {
 	return e.Err
 }
 
-// InstanceCountMismatchError reports a path that resolves a different number of
-// locations than the number of values supplied for it.
+// InstanceCountMismatchError reports locations and values that do not pair up.
 type InstanceCountMismatchError struct {
 	Path      string
 	Locations int
@@ -67,10 +60,7 @@ func (e *InstanceCountMismatchError) Error() string {
 	return fmt.Sprintf("path '%s' resolves %d locations but %d values were supplied", e.Path, e.Locations, e.Values)
 }
 
-// writePlan stages verified fragment writes against one snapshot of the object
-// and commits them in a single atomic splice: either every staged write lands
-// or the object stays untouched, and later fragments diff against the same
-// baseline as earlier ones.
+// writePlan stages writes against one snapshot and commits them atomically.
 type writePlan struct {
 	accessor *Accessor
 	paths    [][]any
@@ -85,8 +75,7 @@ type writeValue struct {
 	present bool
 }
 
-// keyedListMerger carries a bare list write together with the patch merge keys
-// its elements need: the pod spec's own tags do not travel with a bare slice.
+// keyedListMerger names the PodSpec field whose merge keys a bare list uses.
 type keyedListMerger interface {
 	keyedList() (wrapped corev1.PodSpec, field string)
 }
@@ -103,17 +92,14 @@ func (v resourceClaimsValue) keyedList() (corev1.PodSpec, string) {
 	return corev1.PodSpec{ResourceClaims: v}, "resourceClaims"
 }
 
-// identityKeys are the object-identity fields an update may never touch when
-// the declared path resolves to the object root.
+// identityKeys never change through a write at the object root.
 var identityKeys = []string{"apiVersion", "kind", "status"}
 
-// optionalWrappers are corev1 structures a stored pod template may omit
-// entirely (a nil affinity, an empty template metadata). A fragmented field
-// under one of them belongs to the component above the wrapper.
+// optionalWrappers may be missing from a stored template (nil affinity, empty
+// metadata); a field under one belongs to the component above it.
 var optionalWrappers = map[string]bool{"affinity": true, "metadata": true}
 
-// mergeWrite sets the projection at path to exactly the supplied values, as a
-// single staged plan. See writePlan.stage for the write semantics.
+// mergeWrite writes values at path as one staged plan.
 func (a *Accessor) mergeWrite(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, values []any, schema any) error {
 	plan := a.newWritePlan()
 	if err := plan.stage(ctx, definition, path, values, schema); err != nil {
@@ -126,36 +112,14 @@ func (a *Accessor) newWritePlan() *writePlan {
 	return &writePlan{accessor: a}
 }
 
-// stage resolves, diffs, merges and verifies one projection write without
-// touching the object:
-//
-//  1. resolve the concrete locations the path addresses (typed error if the
-//     expression computes a value, aliases locations through negative indexes,
-//     or slices arrays), and read the stored fragment at each location
-//  2. re-read each fragment through the projection type, so encoder artifacts
-//     appear on both sides of the diff and cancel
-//  3. diff baseline against the supplied value into a patch; an empty patch
-//     skips the location entirely
-//  4. merge the patch onto the raw stored fragment, keeping every field the
-//     projection type does not know
-//  5. verify the merged fragment reads back as exactly the supplied value
-//  6. refuse a change to a component the object does not store: an absent
-//     fragment reads as a zero projection and the write would create it
-//     (see componentRoots)
-//  7. combine compatible overlapping writes and refuse conflicting changes
-//
-// A nil value skips its location. schema carries the patch merge keys (for
-// example corev1.PodSpec); a nil schema treats the fragment as a plain leaf.
-//
-// A path that is not writable (a computed expression such as
-// "{requests: .spec.resources}", or a negative index) is a read-only view:
-// writing back exactly what it reads is a no-op, so read-modify-write round
-// trips keep working, and any change fails with PathNotWritableError.
-//
-// A list without a merge key (tolerations, affinity terms) is atomic, as the
-// API declares it: changing it replaces every entry, the same as strategic
-// merge patch and server-side apply, so fields the projection cannot see
-// inside its entries are cleared. Verification reads back only the projection.
+// stage merges one projection write into the plan without touching the object.
+// Per location it diffs the value against the stored fragment read through
+// the projection type, merges the patch onto the raw fragment so unknown
+// fields survive, verifies the read-back, and refuses creating an absent
+// component. A nil value skips its location; a nil schema means a plain leaf.
+// A computed path is a read-only view: writing back what it reads is a no-op,
+// and a change fails with PathNotWritableError. Lists without a merge key are
+// atomic and replaced whole, as in Kubernetes.
 func (p *writePlan) stage(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, values []any, schema any) error {
 	paths, err := resolveLocations(ctx, p.accessor.jqRunner, path)
 	if err == nil {
@@ -211,14 +175,9 @@ func (p *writePlan) stage(ctx context.Context, definition v1alpha1.ComponentDefi
 }
 
 // componentRoots returns, per location, where the object stores the component
-// instance a write addresses. A write may fill in fields below the root (an
-// absent pod spec overlay, nodeAffinity under a missing affinity) but never
-// create the root itself (the Worker of a Master-only job). For a template,
-// pod spec or metadata definition the root is the fragment's parent. For a
-// fragmented definition each field belongs to its parent less any optional
-// wrapper (fieldRoot), and the root is the deepest location those share.
-// Paths that compute a value or resolve a different number of instances are
-// ignored. Cached per instance count.
+// a write addresses; a write may fill fields below it but never create it. The
+// root is the fragment's parent or, for a fragmented definition, the deepest
+// location its fields share (see fieldRoot). Cached per instance count.
 func (p *writePlan) componentRoots(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, paths [][]any) [][]any {
 	if roots, ok := p.roots[len(paths)]; ok {
 		return roots
@@ -274,8 +233,7 @@ func (p *writePlan) componentRoots(ctx context.Context, definition v1alpha1.Comp
 	return p.cacheRoots(len(paths), roots)
 }
 
-// fieldRoot is the location a fragmented field belongs to: its parent, less an
-// optional wrapper the stored object may omit.
+// fieldRoot is a field's parent, less an optional wrapper.
 func fieldRoot(location []any) []any {
 	root := location[:max(len(location)-1, 0)]
 	if len(root) > 0 {
@@ -294,8 +252,7 @@ func (p *writePlan) cacheRoots(instances int, roots [][]any) [][]any {
 	return roots
 }
 
-// isUnchanged reports whether every supplied value equals what path reads now,
-// using the same comparison as a write that turns out to be a no-op.
+// isUnchanged reports whether every value equals what path reads now.
 func (p *writePlan) isUnchanged(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, values []any, schema any) bool {
 	current, err := p.accessor.jqRunner.Evaluate(ctx, path)
 	if err != nil {
@@ -309,7 +266,7 @@ func (p *writePlan) isUnchanged(ctx context.Context, definition v1alpha1.Compone
 		if value == nil {
 			continue
 		}
-		// jq can compute numbers as ints; normalize to decoded JSON first.
+		// jq may compute ints; compare as decoded JSON.
 		var read any
 		if err := convertViaJSON(current[i], &read); err != nil {
 			return false
@@ -321,8 +278,7 @@ func (p *writePlan) isUnchanged(ctx context.Context, definition v1alpha1.Compone
 	return true
 }
 
-// add combines overlapping writes against their common baseline. Only changes
-// made by both views can conflict; unchanged fields in either view are ignored.
+// add stages a write, three-way combining it with overlapping staged writes.
 func (p *writePlan) add(ctx context.Context, object any, location []any, value any) error {
 	for i := 0; i < len(p.paths); {
 		staged := p.paths[i]
@@ -362,8 +318,8 @@ func (p *writePlan) add(ctx context.Context, object any, location []any, value a
 	return nil
 }
 
-// combineWrites three-way merges two changed copies of baseline: each side keeps
-// its own changes, and a value both sides changed differently is a conflict.
+// combineWrites three-way merges two changed copies of baseline; a value both
+// sides changed differently is a conflict.
 func combineWrites(baseline, first, second writeValue) (writeValue, error) {
 	switch {
 	case reflect.DeepEqual(first, second), reflect.DeepEqual(baseline, second):
@@ -375,8 +331,7 @@ func combineWrites(baseline, first, second writeValue) (writeValue, error) {
 	firstMap, isFirstMap := first.value.(map[string]any)
 	secondMap, isSecondMap := second.value.(map[string]any)
 	if !isFirstMap || !isSecondMap || (baseline.present && baseline.value != nil && !isBaseMap) {
-		// Arrays are atomic here: a parent may have reordered or removed the
-		// element addressed by a child path resolved against the baseline.
+		// Arrays are atomic: a parent write may move the element a child addresses.
 		return writeValue{}, fmt.Errorf("different changes to the same value")
 	}
 	keys := make(map[string]struct{}, len(baseMap)+len(firstMap)+len(secondMap))
@@ -401,8 +356,7 @@ func combineWrites(baseline, first, second writeValue) (writeValue, error) {
 	return writeValue{value: combined, present: true}, nil
 }
 
-// commit splices every staged write in one atomic update. An empty plan leaves
-// the object untouched.
+// commit splices every staged write in one atomic update.
 func (p *writePlan) commit(ctx context.Context) error {
 	if len(p.paths) == 0 {
 		return nil
@@ -410,9 +364,8 @@ func (p *writePlan) commit(ctx context.Context) error {
 	return spliceLocations(ctx, p.accessor.jqRunner, p.paths, p.values)
 }
 
-// resolveLocations returns the concrete locations an expression addresses,
-// without mutating. An expression that computes a value instead of addressing
-// one fails with PathNotWritableError.
+// resolveLocations returns the locations an expression addresses, or
+// PathNotWritableError when it computes a value.
 func resolveLocations(ctx context.Context, runner execution.Evaluator, expression string) ([][]any, error) {
 	results, err := runner.Evaluate(ctx, fmt.Sprintf("[path(%s)]", expression))
 	if err != nil {
@@ -440,9 +393,8 @@ func resolveLocations(ctx context.Context, runner execution.Evaluator, expressio
 	return locations, nil
 }
 
-// spliceLocations sets each location to its value in one atomic update. It
-// builds an expression that addresses exactly those locations, getpath(l1),
-// getpath(l2), ..., and assigns through AssignZip, so any Runner can commit.
+// spliceLocations sets each location through one AssignZip over getpath()
+// expressions, so any Runner can commit.
 func spliceLocations(ctx context.Context, runner execution.Assigner, locations [][]any, values []any) error {
 	if len(locations) == 0 {
 		return nil
@@ -458,8 +410,8 @@ func spliceLocations(ctx context.Context, runner execution.Assigner, locations [
 	return runner.AssignZip(ctx, strings.Join(addresses, ", "), values)
 }
 
-// alignValues pairs resolved locations with values. Definitions with instance
-// ids write one value per location; the rest write the single value everywhere.
+// alignValues pairs locations with values: one per instance with instance ids,
+// otherwise the single value everywhere.
 func alignValues(definition v1alpha1.ComponentDefinition, locations int, values []any, path string) ([]any, error) {
 	if definition.InstanceIdPath != nil {
 		if locations != len(values) {
@@ -477,9 +429,8 @@ func alignValues(definition v1alpha1.ComponentDefinition, locations int, values 
 	return aligned, nil
 }
 
-// mergeFragment computes the minimal patch between the stored fragment and the
-// supplied value and applies it to the raw fragment. changed is false when the
-// supplied value equals the stored projection.
+// mergeFragment merges value onto the stored fragment; changed is false when it
+// equals the stored projection.
 func mergeFragment(fragment any, value any, schema any) (merged any, changed bool, err error) {
 	if list, ok := value.(keyedListMerger); ok {
 		return mergeKeyedList(fragment, list)
@@ -494,8 +445,7 @@ func mergeFragment(fragment any, value any, schema any) (merged any, changed boo
 	return mergeStrategic(fragment, newJSON, schema)
 }
 
-// mergeKeyedList wraps a bare list fragment and its write under a struct that
-// carries the merge keys, merges per named element, and unwraps the result.
+// mergeKeyedList merges a bare list through its PodSpec field.
 func mergeKeyedList(fragment any, list keyedListMerger) (any, bool, error) {
 	wrapped, field := list.keyedList()
 	merged, changed, err := mergeFragment(map[string]any{field: fragment}, wrapped, corev1.PodSpec{})
@@ -504,16 +454,14 @@ func mergeKeyedList(fragment any, list keyedListMerger) (any, bool, error) {
 	}
 	items := merged.(map[string]any)[field]
 	if items == nil {
-		// An explicit clear merges to null; the stored value is the empty list
-		// the consumer supplied.
+		// An explicit clear merges to null; store the supplied empty list.
 		items = []any{}
 	}
 	return items, true, nil
 }
 
-// mergeStrategic diffs through the schema's patch merge keys and applies the
-// patch onto the raw fragment map, so keyed lists merge per named element and
-// unknown sibling fields survive.
+// mergeStrategic diffs through the schema's merge keys and patches the raw
+// fragment, so keyed lists merge per element and unknown fields survive.
 func mergeStrategic(fragment any, newJSON []byte, schema any) (any, bool, error) {
 	baselineJSON, err := reproject(fragment, schema)
 	if err != nil {
@@ -547,10 +495,8 @@ func mergeStrategic(fragment any, newJSON []byte, schema any) (any, bool, error)
 	if len(patchMap) == 0 {
 		return nil, false, nil
 	}
-	// The projection types carry retainKeys strategies upstream; honoring them
-	// would delete fields the projection cannot see. Stripping the directive
-	// keeps unknown element fields, and a merge the projection cannot express
-	// (a union flip) fails verification instead of corrupting.
+	// Upstream retainKeys strategies would delete fields the projection cannot
+	// see; dropping them keeps unknown fields.
 	stripRetainKeys(map[string]any(patchMap))
 	merged, err := mergeStoredFragment(raw, patchMap, schema)
 	if err != nil {
@@ -565,10 +511,8 @@ func mergeStrategic(fragment any, newJSON []byte, schema any) (any, bool, error)
 	return map[string]any(merged), true, nil
 }
 
-// mergeStoredFragment applies the patch onto the raw fragment. strategicpatch
-// panics on a keyed list that mixes a null entry with objects
-// (sliceElementType); that becomes an error, which the caller reports as
-// ErrFragmentShape. A patch that does not touch the list never reaches it.
+// mergeStoredFragment applies the patch. strategicpatch panics on a keyed list
+// with a null entry; that becomes an error.
 func mergeStoredFragment(raw map[string]any, patch strategicpatch.JSONMap, schema any) (merged strategicpatch.JSONMap, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -578,9 +522,7 @@ func mergeStoredFragment(raw map[string]any, patch strategicpatch.JSONMap, schem
 	return strategicpatch.StrategicMergeMapPatch(raw, patch, schema)
 }
 
-// mergePlain handles schemaless fragments, which are leaf values the consumer
-// owns outright (a label map, a scheduler name): equal values skip the write,
-// different values replace the leaf.
+// mergePlain replaces a schemaless leaf (labels, a scheduler name) unless equal.
 func mergePlain(fragment any, newJSON []byte) (any, bool, error) {
 	var value any
 	if err := json.Unmarshal(newJSON, &value); err != nil {
@@ -595,8 +537,8 @@ func mergePlain(fragment any, newJSON []byte) (any, bool, error) {
 	return value, true, nil
 }
 
-// reproject reads the raw fragment back through the projection type, so both
-// diff sides carry identical struct-shape loss and the loss cancels.
+// reproject reads the fragment through the projection type, so both diff sides
+// lose the same fields.
 func reproject(fragment any, schema any) ([]byte, error) {
 	fragmentJSON, err := json.Marshal(fragment)
 	if err != nil {
@@ -615,9 +557,7 @@ func reproject(fragment any, schema any) ([]byte, error) {
 	return baselineJSON, nil
 }
 
-// verifyProjection proves, before anything is written, that reading the merged
-// fragment back through the projection type yields exactly the supplied value.
-// A surprising merge result rejects the write instead of corrupting the object.
+// verifyProjection checks the merged fragment reads back as the supplied value.
 func verifyProjection(merged any, supplied []byte, schema any) error {
 	readBack, err := reproject(merged, schema)
 	if err != nil {
@@ -629,8 +569,7 @@ func verifyProjection(merged any, supplied []byte, schema any) error {
 	return nil
 }
 
-// guardIdentity refuses root-path writes that change the object's identity:
-// a template projection declared at "." must never rewrite what the object is.
+// guardIdentity refuses a root write that changes the object identity.
 func guardIdentity(current any, merged any) error {
 	currentMap, _ := current.(map[string]any)
 	mergedMap, _ := merged.(map[string]any)
@@ -649,10 +588,8 @@ func guardIdentity(current any, merged any) error {
 	return nil
 }
 
-// rejectDirectiveKeys refuses a changed value carrying one of the four keys
-// strategicpatch interprets instead of storing ($patch, $retainKeys,
-// $setElementOrder/<field>, $deleteFromPrimitiveList/<field>). Any other key
-// starting with "$" is data: CSI volume attributes use such names.
+// rejectDirectiveKeys refuses the keys strategicpatch interprets. Other "$"
+// keys are data: CSI volume attributes use them.
 func rejectDirectiveKeys(valueJSON []byte) error {
 	var value any
 	if err := json.Unmarshal(valueJSON, &value); err != nil {
@@ -688,9 +625,8 @@ func walkKeys(value any, check func(string) error) error {
 	return nil
 }
 
-// canonicalLocation validates a resolved location's tokens: map keys and plain
-// array indexes only. Negative indexes alias locations the overlap check cannot
-// see, and slice tokens shift later locations when their size changes.
+// canonicalLocation accepts map keys and plain indexes: negative indexes alias
+// locations and slices shift them.
 func canonicalLocation(location []any) ([]any, error) {
 	canonical := make([]any, len(location))
 	for i, token := range location {
@@ -714,8 +650,7 @@ func canonicalLocation(location []any) ([]any, error) {
 	return canonical, nil
 }
 
-// fragmentAt walks a canonical location over the decoded object. An absent
-// fragment returns nil and diffs against an empty baseline.
+// fragmentAt returns the value at location, or nil when it is absent.
 func fragmentAt(object any, location []any) any {
 	current := object
 	for _, token := range location {

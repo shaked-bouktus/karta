@@ -229,11 +229,7 @@ var _ = Describe("write-back", func() {
 			Expect(err).To(MatchError(ErrDirectiveKey))
 		})
 
-		// Only the directives strategic merge interprets are refused. A key that
-		// merely starts with a dollar sign is data: CSI drivers take such volume
-		// attributes, and Kubernetes keeps them across an update.
-		// Namespace is object identity like name and uid; the apiserver rejects a
-		// move. A Pod read as its own template must not be moved or unscoped.
+		// A Pod read as its own template must not move namespace or lose it.
 		DescribeTable("refuses a root write that changes or drops the namespace",
 			func(namespace string) {
 				var object map[string]any
@@ -259,6 +255,8 @@ var _ = Describe("write-back", func() {
 			Entry("namespace removed", ""),
 		)
 
+		// Only the four strategic merge directives are refused; CSI attributes may
+		// use other "$" keys.
 		It("accepts stored keys that only look like directives (CSI volume attributes)", func() {
 			var object map[string]any
 			Expect(json.Unmarshal([]byte(`{"spec":{"containers":[{"name":"main","image":"app:v1"}],"volumes":[{"name":"data","csi":{"driver":"example.csi.k8s.io","volumeAttributes":{"$vendor":"keep"}}}]}}`), &object)).To(Succeed())
@@ -394,8 +392,7 @@ var _ = Describe("write-back", func() {
 				},
 			}
 
-			// The consumer read both views, changed only the image: the stale
-			// container view diffs empty and must not restore the old image.
+			// Only the image changed; the stale container view must not restore it.
 			Expect(accessor.UpdateFragmentedPodSpec(ctx, definition, []FragmentedPodSpec{{
 				Image:     "a:v2",
 				Container: &corev1.Container{Name: "main", Image: "a:v1"},
@@ -481,8 +478,7 @@ var _ = Describe("write-back", func() {
 			got, err := accessor.GetObject()
 			Expect(err).NotTo(HaveOccurred())
 			want := podObject()
-			// The emptied map reads back the same as an absent one through the
-			// projection, so the key goes away, exactly like the apiserver.
+			// An emptied map reads like an absent one, so the key goes, as in the apiserver.
 			delete(want["metadata"].(map[string]any), "labels")
 			Expect(asJSON(got)).To(MatchJSON(asJSON(want)))
 		})
@@ -572,8 +568,7 @@ var _ = Describe("write-back", func() {
 	})
 
 	Context("refusal causes", func() {
-		// The projection reads a null list entry as a zero value, the raw list
-		// keeps nil, and strategicpatch cannot merge the two.
+		// A null list entry reads as a zero value, which strategicpatch cannot merge.
 		DescribeTable("refuses an edit to a keyed list that stores a null entry and leaves unrelated edits alone",
 			func(object string, touch func(*corev1.PodSpec)) {
 				var decoded map[string]any
@@ -638,8 +633,7 @@ var _ = Describe("write-back", func() {
 			Expect(err).To(MatchError(ErrFragmentShape))
 		})
 
-		// An absent fragment reads as a zero projection; writing a changed value
-		// would create it (a Worker replica spec with an empty pod template).
+		// A changed write to an absent fragment would create it (an empty Worker).
 		It("refuses to create a template the object does not store (Master-only PyTorchJob shape)", func() {
 			object := map[string]any{"spec": map[string]any{"pytorchReplicaSpecs": map[string]any{
 				"Master": map[string]any{"replicas": float64(1), "template": map[string]any{"spec": map[string]any{
@@ -721,8 +715,7 @@ var _ = Describe("write-back", func() {
 				`{"spec":{"components":{"standalone":{"replicas":1}}}}`,
 				v1alpha1.FragmentedPodSpecDefinition{SchedulerNamePath: ptr.To(".spec.components.proxy.schedulerName"), LabelsPath: ptr.To(".spec.components.proxy.podLabels"), ResourcesPath: ptr.To(".spec.components.proxy.resources")},
 				func(f *FragmentedPodSpec) { f.SchedulerName = "kai-scheduler" }, ErrFragmentAbsent),
-			// affinity and template metadata are optional wrappers a stored pod
-			// template may omit; a fragment under them belongs to the template.
+			// A missing affinity or template metadata still belongs to the template.
 			Entry("a lone node affinity path under an absent affinity (Deployment shape)",
 				`{"spec":{"template":{"spec":{"containers":[{"name":"main","image":"app:v1"}]}}}}`,
 				v1alpha1.FragmentedPodSpecDefinition{NodeAffinityPath: ptr.To(".spec.template.spec.affinity.nodeAffinity")},

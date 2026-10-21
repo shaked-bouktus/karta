@@ -12,8 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// emptyKeyMarker flags, on private copies only, an entry that stores its merge
-// key as "", so restore can tell it from an entry that omits the key.
+// emptyKeyMarker marks, on merge copies, an entry storing its key as "".
 const emptyKeyMarker = "$kartaEmptyMergeKey"
 
 // keyedList is a list the projection type merges by a key.
@@ -23,13 +22,8 @@ type keyedList struct {
 	elem  reflect.Type
 }
 
-// transformCompositeKeys gives every keyed list of the schema an identity
-// strategic merge can match on, on private copies; the keys are restored after
-// the merge. The identity is the merge key, the second field server-side apply
-// declares where there is one (ports, topology spread constraints), and the
-// occurrence of that pair, since a stored object may repeat it (two env
-// definitions of PATH, two 80/TCP ports with different names) and each entry
-// must stay editable with its unknown fields.
+// transformCompositeKeys encodes each keyed entry's identity (merge key,
+// declared second field, occurrence) into its merge key, or restores it.
 func transformCompositeKeys(object map[string]any, schema any, restore bool) error {
 	return walkKeyedLists(reflect.TypeOf(schema), object, func(list []any, keyed keyedList) error {
 		declared, hasDeclared := declaredQualifier(keyed.elem)
@@ -49,8 +43,7 @@ func transformCompositeKeys(object map[string]any, schema any, restore bool) err
 	})
 }
 
-// declaredQualifier returns the second identity field of a list the API keys
-// by two fields.
+// declaredQualifier returns a list's second identity field, if it has one.
 func declaredQualifier(elem reflect.Type) (func(item map[string]any) any, bool) {
 	switch elem {
 	case reflect.TypeFor[corev1.ContainerPort]():
@@ -67,9 +60,8 @@ func declaredQualifier(elem reflect.Type) (func(item map[string]any) any, bool) 
 	}
 }
 
-// walkKeyedLists visits each patchMergeKey list of the schema at its position
-// in the object, then the lists inside its elements. Lists without a merge key
-// are atomic and are skipped.
+// walkKeyedLists visits each keyed list of the schema, outer lists first; lists
+// without a merge key are atomic and skipped.
 func walkKeyedLists(t reflect.Type, object map[string]any, visit func(list []any, keyed keyedList) error) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -127,8 +119,7 @@ func keyedListOf(field reflect.StructField, name string) (keyedList, bool) {
 	return keyedList{field: name, key: key, elem: elem}, true
 }
 
-// jsonName is the JSON key of a struct field; inline marks an embedded struct
-// whose fields live on the parent object.
+// jsonName is a field's JSON key; inline marks an embedded struct.
 func jsonName(field reflect.StructField) (name string, inline bool) {
 	if field.PkgPath != "" {
 		return "", false
@@ -147,10 +138,8 @@ func jsonName(field reflect.StructField) (name string, inline bool) {
 	return name, false
 }
 
-// transformListKeys encodes [primary key, qualifier] into the primary key, or
-// restores it. A missing or empty key encodes as null, so an unnamed container
-// matches its projection, whose type encodes the name as "". Restore puts back
-// the form the entry had.
+// transformListKeys encodes [key, qualifier] into the key, or restores it. A
+// missing or empty key encodes as null and restores to its stored form.
 func transformListKeys(list []any, primary string, restore bool, qualify func(item map[string]any) any) error {
 	for _, raw := range list {
 		item, ok := raw.(map[string]any)
@@ -189,12 +178,9 @@ func transformListKeys(list []any, primary string, restore bool, qualify func(it
 	return nil
 }
 
-// projectResizedGroups applies Update semantics to a key whose occurrence
-// count the write changes: the stored entries of that key are replaced in raw
-// by their projection, so they come out as supplied and drop unknown fields,
-// as a PUT would. Otherwise occurrence matching could shift an unknown field
-// onto another entry of the same key, which verification cannot see. Other
-// keys keep their unknown fields. raw and baseline are index-aligned.
+// projectResizedGroups gives Update semantics to a key whose count changes: its
+// stored entries become their projection and lose unknown fields, so occurrence
+// matching cannot move a field onto another entry.
 func projectResizedGroups(raw, baseline, supplied map[string]any, schema any) {
 	projectResizedGroupsOf(reflect.TypeOf(schema), raw, baseline, supplied)
 }
@@ -265,8 +251,7 @@ func projectResizedGroupsOf(t reflect.Type, raw, baseline, supplied map[string]a
 	}
 }
 
-// groupIdentity returns an entry's merge key, plus the declared second field
-// where the list has one.
+// groupIdentity is an entry's merge key plus its declared second field.
 func groupIdentity(keyed keyedList) func(entry any) string {
 	qualify, declared := declaredQualifier(keyed.elem)
 	return func(entry any) string {

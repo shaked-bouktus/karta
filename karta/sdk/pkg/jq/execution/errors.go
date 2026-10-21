@@ -31,8 +31,7 @@ func (e *JQCompileError) Unwrap() error {
 	return e.Err
 }
 
-// PathNotWritableError reports an expression that computes a value instead of
-// addressing locations in the object, so nothing can be written through it.
+// PathNotWritableError reports a path that computes a value, not a location.
 type PathNotWritableError struct {
 	Expression string
 	Err        error

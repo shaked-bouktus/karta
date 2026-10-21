@@ -194,9 +194,8 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 		expectObject(accessor, want)
 	})
 
-	// Kubernetes accepts two ports with the same containerPort and protocol when
-	// their names differ, and two constraints with the same key and policy. The
-	// occurrence index applies on top of the declared two-field identity.
+	// Ports may repeat containerPort and protocol under different names, and
+	// constraints their key and policy; occurrence tells them apart.
 	Context("entries that repeat their full declared identity", func() {
 		storedPorts := `[{"containerPort":80,"protocol":"TCP","name":"http","vendorExtension":"first"},{"containerPort":80,"protocol":"TCP","name":"alias","vendorExtension":"second"}]`
 		withPorts := func(ports string) map[string]any {
@@ -240,8 +239,8 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 		})
 	})
 
-	// Every keyed list follows the env rules: identity is the key plus its
-	// occurrence, and a key whose count changes is written as supplied.
+	// Every keyed list follows the env rules: key plus occurrence, and a resized
+	// key is written as supplied.
 	Context("keyed lists other than env that repeat a key", func() {
 		podObject := func(fields string) map[string]any {
 			return decode(`{"spec":{"containers":[{"name":"main","image":"app:v1"}],` + fields + `}}`)
@@ -284,8 +283,7 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 				`"hostAliases":[{"ip":"127.0.0.1","hostnames":["second"],"vendorExtension":"a"},{"ip":"127.0.0.1","hostnames":["first"],"vendorExtension":"b"}]`),
 		)
 
-		// Two containers with one name are invalid for the apiserver, which rejects
-		// the PUT. Karta still addresses the second one and keeps its unknown field.
+		// The apiserver rejects duplicate names, but Karta still edits the second.
 		It("edits the second of two containers that share a name", func() {
 			object := decode(`{"spec":{"containers":[{"name":"main","image":"a:v1"},{"name":"main","image":"b:v1","vendorExtension":"keep"}]}}`)
 			accessor := NewAccessor(execution.NewDefaultRunner(object))
@@ -299,8 +297,7 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 		})
 	})
 
-	// A Knative template may leave its single container unnamed. The projection
-	// types encode the missing name as "", which must not make the entry new.
+	// Knative allows an unnamed container; the projection types encode it as "".
 	Context("entries whose merge key is missing or empty", func() {
 		DescribeTable("merge by occurrence and keep the stored form of the key",
 			func(stored string, mutate func(*corev1.PodSpec), want string) {
@@ -378,10 +375,8 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 				`[{"name":"PATH","value":"/bin"},{"name":"PATH","value":"$(PATH):/opt/bin"},{"name":"MODE","value":"safe","vendorExtension":"keep"}]`),
 		)
 
-		// A repeated name matches by occurrence, which is positional: when the
-		// write changes how many times the name is defined, its definitions are
-		// written as supplied and lose their unknown fields, as an Update would.
-		// Every other change keeps them.
+		// A repeated name matches by position. If its count changes, its entries are
+		// written as supplied and lose unknown fields, as an Update would.
 		unknownOnRepeated := `[{"name":"PATH","value":"/bin","vendorExtension":"keep"},{"name":"PATH","value":"$(PATH):/opt/bin"},{"name":"MODE","value":"fast"}]`
 
 		DescribeTable("follows Update semantics for a repeated name with unknown fields",

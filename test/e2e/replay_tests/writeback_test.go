@@ -26,21 +26,19 @@ import (
 	"github.com/dsx-ai-factory/workload-map/test/e2e/recorder"
 )
 
-// unknownKey marks fields the typed projection does not know. A platform that stores a
-// workload with a newer Kubernetes than Karta's k8s.io/api sees exactly this shape.
+// unknownKey marks fields the typed projection does not know, as with a newer
+// Kubernetes than Karta's k8s.io/api.
 const unknownKey = "x-karta-unknown"
 
-// templateEdit is one realistic change a scheduler or platform controller makes to a pod
-// template. It reports whether the template had anything to change and how many list
-// entries legitimately lose their unknown fields: removed entries, and the definitions
-// of an env name whose count the edit changes (Karta writes those as an Update would).
+// templateEdit is a change a scheduler or platform controller makes. It reports
+// whether it applied and how many entries legitimately lose unknown fields.
 type templateEdit struct {
 	name  string
 	apply func(t *corev1.PodTemplateSpec) (applied bool, lossyEntries int)
 }
 
-// fragmentEdit is the same for definitions that scatter the pod spec over several paths.
-// field names the definition path the edit needs; without it Karta must refuse the write.
+// fragmentEdit is the same for fragmented definitions; without the field path
+// Karta must refuse the write.
 type fragmentEdit struct {
 	name  string
 	field func(def *kartav1alpha1.FragmentedPodSpecDefinition) *string
@@ -277,11 +275,9 @@ var fragmentEdits = []fragmentEdit{
 		}},
 }
 
-// Every recorded frame is a real object a live cluster produced, with its server defaults
-// and status. Each edit is written through Karta on a pristine copy and on a copy whose
-// pod fragments carry fields the typed projection does not know. The raw object must change
-// only inside the written fragments, keep every unknown field, read back what was written,
-// and still read the recorded state afterwards.
+// Each edit is written on every recorded frame, pristine and with unknown
+// fields. The object may change only inside written fragments, must keep unknown
+// fields, read back the write, and still read the recorded state.
 var _ = Describe("Karta writes back to the recorded objects", func() {
 	recordings, _ := filepath.Glob(recordedGlob)
 	if len(recordings) == 0 {
@@ -314,10 +310,8 @@ var _ = Describe("Karta writes back to the recorded objects", func() {
 	}
 })
 
-// A component whose fragment the stored object lacks (a Master-only PyTorchJob has no Worker,
-// a standalone Milvus has no queryNode) still reads as one zero-valued instance. Writing a
-// changed value to it must not create the fragment: that adds a replica spec or a component
-// nobody asked for, with an empty pod template the operator then acts on.
+// A component the object lacks still reads as one zero instance; a changed
+// write must not create it (a Worker for a Master-only PyTorchJob).
 var _ = Describe("Karta refuses to create a fragment the object does not have", func() {
 	recordings, _ := filepath.Glob(recordedGlob)
 	for _, path := range recordings {
@@ -516,9 +510,8 @@ func replayWrites(ctx context.Context, path string, injectUnknown bool, tEdit te
 		Expect(after.GetNamespace()).To(Equal(before.GetNamespace()), state)
 		Expect(after.GetResourceVersion()).To(Equal(before.GetResourceVersion()), state)
 
-		// Every change sits inside a fragment the written components own. Both
-		// objects are re-decoded from JSON so the diff compares like with like
-		// (the recording decodes numbers as int64, the write path as float64).
+		// Every change sits inside a written fragment. Both sides are re-decoded so
+		// numbers compare by value.
 		var allowed [][]any
 		for _, comp := range written {
 			allowed = append(allowed, locations[comp.Name()].all...)
@@ -540,8 +533,7 @@ func replayWrites(ctx context.Context, path string, injectUnknown bool, tEdit te
 			Expect(afterCount).To(BeNumerically("<=", beforeCount), state)
 		}
 
-		// The written object is a fixed point: a second identical write is a no-op, and
-		// Karta still reads the recorded state from it.
+		// A second identical write is a no-op, and the recorded state still reads.
 		again := resource.NewComponentFactoryFromObject(karta, after.DeepCopy())
 		rootAgain, err := again.GetRootComponent()
 		Expect(err).NotTo(HaveOccurred())
@@ -570,15 +562,14 @@ func replayWrites(ctx context.Context, path string, injectUnknown bool, tEdit te
 	}
 }
 
-// componentLocations are the raw locations a component's spec definition paths address in
-// one object: all of them, and the subset that holds a value there.
+// componentLocations are the locations a component's paths address, and the
+// subset that holds a value.
 type componentLocations struct {
 	all     [][]any
 	present [][]any
 }
 
-// fragmentLocations resolves the locations per component, so the suite can tell a fragment
-// the object has from one it lacks, and check that a write stays inside the fragments.
+// fragmentLocations resolves locations per component, present and absent.
 func fragmentLocations(ctx context.Context, karta *kartav1alpha1.Karta, object *unstructured.Unstructured) map[string]componentLocations {
 	runner := execution.NewDefaultRunner(object.DeepCopy())
 	resolve := func(expression *string, into *componentLocations) {
@@ -622,9 +613,8 @@ func fragmentLocations(ctx context.Context, karta *kartav1alpha1.Karta, object *
 	return out
 }
 
-// injectUnknownFields plants unknownKey on every merge-keyed map under the location: the
-// fragment itself, template metadata and spec, containers, their env and ports, volumes.
-// Atomic lists are left alone, since replacing them whole drops their entries by design.
+// injectUnknownFields plants unknownKey on every merge-keyed map under location.
+// Atomic lists are skipped: replacing them drops their entries by design.
 func injectUnknownFields(object map[string]any, location []any) {
 	switch fragment := valueAt(object, location).(type) {
 	case map[string]any:
@@ -678,9 +668,8 @@ func markContainerList(list []any) {
 	}
 }
 
-// changedPaths lists every leaf location where before and after differ. Both
-// sides must come from one JSON decoding so number types agree; a key whose
-// value is null counts as present.
+// changedPaths lists every leaf where before and after differ; a key holding
+// null counts as present. Decode both sides the same way.
 func changedPaths(prefix []any, before, after any) [][]any {
 	switch b := before.(type) {
 	case map[string]any:
@@ -728,9 +717,8 @@ func changedPaths(prefix []any, before, after any) [][]any {
 	}
 }
 
-// withinFragments reports whether a changed location lies inside an allowed fragment. A write
-// that creates a missing parent (affinity, when only nodeAffinity is addressed) shows up as a
-// change at the parent; then everything the write created under it must lie inside a fragment.
+// withinFragments reports whether a change lies inside an allowed fragment. A
+// created parent (affinity for nodeAffinity) must contain only fragment changes.
 func withinFragments(changed []any, before, after map[string]any, allowed [][]any) bool {
 	if hasAllowedPrefix(changed, allowed) {
 		return true

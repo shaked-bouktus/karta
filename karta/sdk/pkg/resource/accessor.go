@@ -433,8 +433,7 @@ func (a *Accessor) UpdateFragmentedPodSpec(ctx context.Context, definition v1alp
 
 	fragmentedDef := definition.SpecDefinition.FragmentedPodSpecDefinition
 
-	// All fragments stage into one plan: they diff against the same snapshot
-	// and commit together, so a refused fragment leaves the object untouched.
+	// One plan: fragments share a snapshot and commit together or not at all.
 	plan := a.newWritePlan()
 
 	// String fields
@@ -470,8 +469,7 @@ func (a *Accessor) UpdateFragmentedPodSpec(ctx context.Context, definition v1alp
 		return fmt.Errorf("failed to update container: %w", err)
 	}
 
-	// Slice fields merge per named element, so one container edit patches one
-	// element instead of replacing the list.
+	// Slice fields merge per named element.
 	if err := updateSliceField(ctx, plan, definition, fragmentedDef.ResourceClaimsPath, fragmentedPodSpecs,
 		func(s FragmentedPodSpec) []corev1.PodResourceClaim { return s.ResourceClaims },
 		func(v []corev1.PodResourceClaim) any { return resourceClaimsValue(v) }); err != nil {
@@ -486,10 +484,8 @@ func (a *Accessor) UpdateFragmentedPodSpec(ctx context.Context, definition v1alp
 	return plan.commit(ctx)
 }
 
-// stageField stages one fragment kind across instances. A nil value skips its
-// instance; a non-nil empty value is an explicit clear. Instances that end up
-// equal to the stored state are skipped by the merge, and a fragment nobody set
-// never resolves its path.
+// stageField stages one fragment across instances: nil skips an instance, and
+// an empty non-nil value clears it.
 func stageField(ctx context.Context, plan *writePlan, def v1alpha1.ComponentDefinition, path *string, values []any, schema any) error {
 	set := lo.CountBy(values, func(v any) bool { return v != nil })
 	if path == nil {
