@@ -35,18 +35,17 @@ var (
 	ErrFragmentAbsent = errors.New("object does not store the fragment, the write would create it")
 )
 
+// identityKeys never change through a write at the object root.
+var identityKeys = []string{"apiVersion", "kind", "status"}
+
+// optionalWrappers may be missing from a stored template (nil affinity, empty
+// metadata); a field under one belongs to the component above it.
+var optionalWrappers = map[string]bool{"affinity": true, "metadata": true}
+
 // WriteError reports a refused update. Nothing was written.
 type WriteError struct {
 	Path string
 	Err  error
-}
-
-func (e *WriteError) Error() string {
-	return fmt.Sprintf("write to '%s' refused, nothing was written: %v", e.Path, e.Err)
-}
-
-func (e *WriteError) Unwrap() error {
-	return e.Err
 }
 
 // InstanceCountMismatchError reports locations and values that do not pair up.
@@ -54,10 +53,6 @@ type InstanceCountMismatchError struct {
 	Path      string
 	Locations int
 	Values    int
-}
-
-func (e *InstanceCountMismatchError) Error() string {
-	return fmt.Sprintf("path '%s' resolves %d locations but %d values were supplied", e.Path, e.Locations, e.Values)
 }
 
 // writePlan stages writes against one snapshot and commits them atomically.
@@ -82,22 +77,27 @@ type keyedListMerger interface {
 
 type containersValue []corev1.Container
 
+type resourceClaimsValue []corev1.PodResourceClaim
+
+func (e *WriteError) Error() string {
+	return fmt.Sprintf("write to '%s' refused, nothing was written: %v", e.Path, e.Err)
+}
+
+func (e *WriteError) Unwrap() error {
+	return e.Err
+}
+
+func (e *InstanceCountMismatchError) Error() string {
+	return fmt.Sprintf("path '%s' resolves %d locations but %d values were supplied", e.Path, e.Locations, e.Values)
+}
+
 func (v containersValue) keyedList() (corev1.PodSpec, string) {
 	return corev1.PodSpec{Containers: v}, "containers"
 }
 
-type resourceClaimsValue []corev1.PodResourceClaim
-
 func (v resourceClaimsValue) keyedList() (corev1.PodSpec, string) {
 	return corev1.PodSpec{ResourceClaims: v}, "resourceClaims"
 }
-
-// identityKeys never change through a write at the object root.
-var identityKeys = []string{"apiVersion", "kind", "status"}
-
-// optionalWrappers may be missing from a stored template (nil affinity, empty
-// metadata); a field under one belongs to the component above it.
-var optionalWrappers = map[string]bool{"affinity": true, "metadata": true}
 
 // mergeWrite writes values at path as one staged plan.
 func (a *Accessor) mergeWrite(ctx context.Context, definition v1alpha1.ComponentDefinition, path string, values []any, schema any) error {

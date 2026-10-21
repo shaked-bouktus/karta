@@ -45,6 +45,13 @@ type fragmentEdit struct {
 	apply func(f *resource.FragmentedPodSpec)
 }
 
+// componentLocations are the locations a component's paths address, and the
+// subset that holds a value.
+type componentLocations struct {
+	all     [][]any
+	present [][]any
+}
+
 var gpu = apiresource.MustParse("1")
 
 var templateEdits = []templateEdit{
@@ -560,13 +567,6 @@ func replayWrites(ctx context.Context, path string, injectUnknown bool, tEdit te
 	if !applicable {
 		Skip("nothing in this recording to apply the edit to")
 	}
-}
-
-// componentLocations are the locations a component's paths address, and the
-// subset that holds a value.
-type componentLocations struct {
-	all     [][]any
-	present [][]any
 }
 
 // fragmentLocations resolves locations per component, present and absent.
