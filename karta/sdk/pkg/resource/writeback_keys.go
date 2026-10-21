@@ -12,6 +12,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// emptyKeyMarker flags, on private copies only, an entry that stores its merge
+// key as "", so restore can tell it from an entry that omits the key.
+const emptyKeyMarker = "$kartaEmptyMergeKey"
+
 // keyedList is a list the projection type merges by a key.
 type keyedList struct {
 	field string
@@ -31,7 +35,7 @@ func transformCompositeKeys(object map[string]any, schema any, restore bool) err
 		declared, hasDeclared := declaredQualifier(keyed.elem)
 		occurrences := map[string]int{}
 		qualify := func(item map[string]any) any {
-			group := fmt.Sprint(item[keyed.key])
+			group := fmt.Sprint(mergeKeyOf(item, keyed.key))
 			if !hasDeclared {
 				occurrences[group]++
 				return occurrences[group] - 1
@@ -144,9 +148,9 @@ func jsonName(field reflect.StructField) (name string, inline bool) {
 }
 
 // transformListKeys encodes [primary key, qualifier] into the primary key, or
-// restores it. Entries that are not objects or lack the key keep a null
-// identity, so an untouched one round-trips and an edited one fails
-// verification.
+// restores it. A missing or empty key encodes as null, so an unnamed container
+// matches its projection, whose type encodes the name as "". Restore puts back
+// the form the entry had.
 func transformListKeys(list []any, primary string, restore bool, qualify func(item map[string]any) any) error {
 	for _, raw := range list {
 		item, ok := raw.(map[string]any)
@@ -164,12 +168,19 @@ func transformListKeys(list []any, primary string, restore bool, qualify func(it
 			}
 			if components[0] == nil {
 				delete(item, primary)
+				if item[emptyKeyMarker] == true {
+					item[primary] = ""
+				}
+				delete(item, emptyKeyMarker)
 				continue
 			}
 			item[primary] = components[0]
 			continue
 		}
-		encoded, err := json.Marshal([2]any{item[primary], qualify(item)})
+		if item[primary] == "" {
+			item[emptyKeyMarker] = true
+		}
+		encoded, err := json.Marshal([2]any{mergeKeyOf(item, primary), qualify(item)})
 		if err != nil {
 			return fmt.Errorf("encode merge key %s: %w", primary, err)
 		}
@@ -261,8 +272,16 @@ func groupIdentity(keyed keyedList) func(entry any) string {
 	return func(entry any) string {
 		item, _ := entry.(map[string]any)
 		if !declared {
-			return fmt.Sprint(item[keyed.key])
+			return fmt.Sprint(mergeKeyOf(item, keyed.key))
 		}
-		return fmt.Sprint(item[keyed.key], "/", qualify(item))
+		return fmt.Sprint(mergeKeyOf(item, keyed.key), "/", qualify(item))
 	}
+}
+
+// mergeKeyOf is an entry's merge key, with "" read as absent.
+func mergeKeyOf(item map[string]any, key string) any {
+	if value := item[key]; value != "" {
+		return value
+	}
+	return nil
 }

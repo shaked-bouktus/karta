@@ -299,6 +299,45 @@ var _ = Describe("write-back of lists keyed by a composite identity", func() {
 		})
 	})
 
+	// A Knative template may leave its single container unnamed. The projection
+	// types encode the missing name as "", which must not make the entry new.
+	Context("entries whose merge key is missing or empty", func() {
+		DescribeTable("merge by occurrence and keep the stored form of the key",
+			func(stored string, mutate func(*corev1.PodSpec), want string) {
+				accessor := NewAccessor(execution.NewDefaultRunner(decode(stored)))
+
+				specs, err := accessor.ExtractPodSpec(ctx, podSpecDefinition)
+				Expect(err).NotTo(HaveOccurred())
+				mutate(&specs[0])
+
+				Expect(accessor.UpdatePodSpec(ctx, podSpecDefinition, specs)).To(Succeed())
+				expectObject(accessor, decode(want))
+			},
+			Entry("an unnamed container takes an env var and stays unnamed",
+				`{"spec":{"containers":[{"image":"app:v1","vendorExtension":"keep","env":[{"name":"TARGET","value":"a"}]}]}}`,
+				func(s *corev1.PodSpec) {
+					s.Containers[0].Env = append(s.Containers[0].Env, corev1.EnvVar{Name: "X", Value: "1"})
+				},
+				`{"spec":{"containers":[{"image":"app:v1","vendorExtension":"keep","env":[{"name":"TARGET","value":"a"},{"name":"X","value":"1"}]}]}}`),
+			Entry("an explicitly empty name stays explicit",
+				`{"spec":{"containers":[{"name":"","image":"app:v1","vendorExtension":"keep"}]}}`,
+				func(s *corev1.PodSpec) { s.Containers[0].Image = "app:v2" },
+				`{"spec":{"containers":[{"name":"","image":"app:v2","vendorExtension":"keep"}]}}`),
+			Entry("the second of two unnamed containers changes by position",
+				`{"spec":{"containers":[{"image":"a:v1","vendorExtension":"a"},{"image":"b:v1","vendorExtension":"b"}]}}`,
+				func(s *corev1.PodSpec) { s.Containers[1].Image = "b:v2" },
+				`{"spec":{"containers":[{"image":"a:v1","vendorExtension":"a"},{"image":"b:v2","vendorExtension":"b"}]}}`),
+			Entry("an env var without a name changes by position",
+				`{"spec":{"containers":[{"name":"main","image":"a:v1","env":[{"value":"first","vendorExtension":"keep"}]}]}}`,
+				func(s *corev1.PodSpec) { s.Containers[0].Env[0].Value = "next" },
+				`{"spec":{"containers":[{"name":"main","image":"a:v1","env":[{"value":"next","vendorExtension":"keep"}]}]}}`),
+			Entry("a missing and an empty name each keep their form",
+				`{"spec":{"containers":[{"image":"a:v1"},{"name":"","image":"b:v1"}]}}`,
+				func(s *corev1.PodSpec) { s.Containers[0].Image, s.Containers[1].Image = "a:v2", "b:v2" },
+				`{"spec":{"containers":[{"image":"a:v2"},{"name":"","image":"b:v2"}]}}`),
+		)
+	})
+
 	Context("env vars that repeat a name", func() {
 		// The kubelet uses the last definition; X=$(X):more appends to an earlier one.
 		envObject := func(env string) map[string]any {

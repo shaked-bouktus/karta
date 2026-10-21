@@ -638,31 +638,6 @@ var _ = Describe("write-back", func() {
 			Expect(err).To(MatchError(ErrFragmentShape))
 		})
 
-		// An entry without its merge key has a null identity the merge cannot address.
-		It("refuses a change the merge cannot express (an env entry without a name)", func() {
-			object := map[string]any{"spec": map[string]any{"containers": []any{
-				map[string]any{"name": "main", "image": "a:v1", "env": []any{
-					map[string]any{"value": "first", "vendorExtension": "keep"},
-				}},
-			}}}
-			want := deepCopyMap(object)
-			accessor := newAccessor(object)
-			definition := v1alpha1.ComponentDefinition{
-				Name:           "pod",
-				SpecDefinition: &v1alpha1.SpecDefinition{PodSpecPath: ptr.To(".spec")},
-			}
-
-			specs, err := accessor.ExtractPodSpec(ctx, definition)
-			Expect(err).NotTo(HaveOccurred())
-			specs[0].Containers[0].Env[0].Value = "next"
-
-			err = accessor.UpdatePodSpec(ctx, definition, specs)
-			Expect(err).To(MatchError(ErrReadBackMismatch))
-			got, err := accessor.GetObject()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(got).To(Equal(want))
-		})
-
 		// An absent fragment reads as a zero projection; writing a changed value
 		// would create it (a Worker replica spec with an empty pod template).
 		It("refuses to create a template the object does not store (Master-only PyTorchJob shape)", func() {
