@@ -4,12 +4,9 @@
 package kartadefinitioninventory
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -626,32 +623,6 @@ var _ = Describe("Inventory", func() {
 
 			Eventually(w.ResultChan(), eventuallyTimeout).Should(BeClosed())
 			Expect(inventory.Ready()).To(Succeed())
-		})
-
-		It("logs the unkeyable and unmatched-include reports only when they change", func() {
-			var logs bytes.Buffer
-			inventory.log = slog.New(slog.NewTextHandler(&logs, nil))
-			var err error
-			_, inventory.clusterFilter, err = Options{Cluster: SourceOptions{Enabled: true, Include: []string{"rootless", "missing"}}}.compile()
-			Expect(err).NotTo(HaveOccurred())
-			unkeyable := func() int { return strings.Count(logs.String(), "whose root has no version or kind") }
-			unmatched := func() int { return strings.Count(logs.String(), "include names match no Karta") }
-			rootless := unstructuredKarta(newRootlessKarta("rootless"))
-
-			Expect(store.Replace([]any{rootless}, "1")).To(Succeed())
-			for range 3 {
-				Expect(store.Update(rootless.DeepCopy())).To(Succeed())
-			}
-			Expect(unkeyable()).To(Equal(1))
-			Expect(unmatched()).To(Equal(1))
-
-			Expect(store.Update(unstructuredKarta(newKarta("rootless", jobGVK)))).To(Succeed())
-			Expect(store.Update(rootless)).To(Succeed())
-			missing := unstructuredKarta(newKarta("missing", jobGVK))
-			Expect(store.Add(missing)).To(Succeed())
-			Expect(store.Delete(missing)).To(Succeed())
-			Expect(unkeyable()).To(Equal(2))
-			Expect(unmatched()).To(Equal(2))
 		})
 
 		It("does not count a server without streaming lists as a failure, since LIST follows", func() {

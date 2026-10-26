@@ -8,9 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"sync"
-	"sync/atomic"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,7 +42,6 @@ type Inventory struct {
 	clusterFilter sourceFilter
 	log           *slog.Logger
 
-	current atomic.Pointer[published]
 	runOnce sync.Once
 
 	mu    sync.Mutex
@@ -54,18 +51,11 @@ type Inventory struct {
 	failure  error
 	failures uint64
 	// listedFrom is the failure count when the latest list began.
-	listedFrom        uint64
-	stopped           bool
-	unkeyable         []string
-	unmatchedIncludes []string
+	listedFrom uint64
+	stopped    bool
 }
 
-type published struct {
-	resolved snapshot
-	err      error
-}
-
-// observedStore republishes the snapshot after every write.
+// observedStore marks the source synced, and clears older failures, when a list is applied.
 type observedStore struct {
 	cache.Store
 	inventory *Inventory
@@ -91,11 +81,6 @@ func New(client dynamic.Interface, options Options) (*Inventory, error) {
 	}
 	if !catalogFilter.enabled && !clusterFilter.enabled {
 		i.log.Warn("both Karta definition sources are disabled; no workload has a definition")
-	}
-	if clusterFilter.enabled {
-		i.current.Store(&published{err: ErrNotReady})
-	} else {
-		i.current.Store(&published{resolved: resolve(i.catalog, nil, catalogFilter, clusterFilter)})
 	}
 	return i, nil
 }
@@ -205,24 +190,6 @@ func (i *Inventory) fail(err error) {
 	i.failures++
 }
 
-func (s observedStore) Add(obj any) error {
-	err := s.Store.Add(obj)
-	s.inventory.update(nil)
-	return err
-}
-
-func (s observedStore) Update(obj any) error {
-	err := s.Store.Update(obj)
-	s.inventory.update(nil)
-	return err
-}
-
-func (s observedStore) Delete(obj any) error {
-	err := s.Store.Delete(obj)
-	s.inventory.update(nil)
-	return err
-}
-
 func (s observedStore) Replace(list []any, resourceVersion string) error {
 	err := s.Store.Replace(list, resourceVersion)
 	first := false
@@ -240,77 +207,73 @@ func (s observedStore) Replace(list []any, resourceVersion string) error {
 	return err
 }
 
-// update applies change, then rebuilds the snapshot from the store.
+// update applies change under i.mu.
 func (i *Inventory) update(change func()) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if change != nil {
-		change()
-	}
-
-	switch {
-	case i.stopped:
-		i.current.Store(&published{err: fmt.Errorf("%w: %w", ErrUnavailable, errStopped)})
-		return
-	case i.failure != nil && (apierrors.IsForbidden(i.failure) || apierrors.IsUnauthorized(i.failure)):
-		i.current.Store(&published{err: fmt.Errorf("%w: %w", ErrPermissionDenied, i.failure)})
-		return
-	case i.failure != nil:
-		i.current.Store(&published{err: fmt.Errorf("%w: %w", ErrUnavailable, i.failure)})
-		return
-	case !i.synced:
-		i.current.Store(&published{err: ErrNotReady})
-		return
-	}
-
-	objects := i.store.List()
-	definitions := make([]*v1alpha1.Karta, 0, len(objects))
-	for _, obj := range objects {
-		u := obj.(*unstructured.Unstructured)
-		var k v1alpha1.Karta
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &k); err != nil {
-			i.current.Store(&published{err: fmt.Errorf("%w: decode Karta %q: %w", ErrUnavailable, u.GetName(), err)})
-			return
-		}
-		definitions = append(definitions, &k)
-	}
-	resolved := resolve(i.catalog, definitions, i.catalogFilter, i.clusterFilter)
-
-	// Log reports only when they change.
-	if !slices.Equal(resolved.unkeyable, i.unkeyable) {
-		i.unkeyable = resolved.unkeyable
-		if len(i.unkeyable) > 0 {
-			i.log.Warn("ignoring cluster Karta definitions whose root has no version or kind", "names", i.unkeyable)
-		}
-	}
-	if !slices.Equal(resolved.unmatchedIncludes, i.unmatchedIncludes) {
-		i.unmatchedIncludes = resolved.unmatchedIncludes
-		if len(i.unmatchedIncludes) > 0 {
-			i.log.Warn("cluster include names match no Karta definition", "names", i.unmatchedIncludes)
-		}
-	}
-	i.current.Store(&published{resolved: resolved})
+	change()
 }
 
 // Ready is nil once lookups can succeed.
 func (i *Inventory) Ready() error {
-	return i.current.Load().err
+	_, err := i.elect()
+	return err
 }
 
 // Lookup ignores the requested version and never falls back while a source fails.
 func (i *Inventory) Lookup(gvk schema.GroupVersionKind) (Selection, error) {
-	p := i.current.Load()
-	if p.err != nil {
-		return Selection{}, p.err
+	elected, err := i.elect()
+	if err != nil {
+		return Selection{}, err
 	}
-	return p.resolved.lookup(gvk)
+	return elected.lookup(gvk)
 }
 
 // Selections returns nothing while a source fails.
 func (i *Inventory) Selections() ([]Selection, error) {
-	p := i.current.Load()
-	if p.err != nil {
-		return nil, p.err
+	elected, err := i.elect()
+	if err != nil {
+		return nil, err
 	}
-	return p.resolved.list()
+	return elected.list()
+}
+
+// elect runs the election over the catalog and the cluster store on every read.
+// Karta definitions are few and rarely change, so no result is kept between reads.
+func (i *Inventory) elect() (snapshot, error) {
+	i.mu.Lock()
+	err, store := i.health(), i.store
+	i.mu.Unlock()
+	if err != nil {
+		return snapshot{}, err
+	}
+	var definitions []*v1alpha1.Karta
+	if store != nil {
+		for _, obj := range store.List() {
+			u := obj.(*unstructured.Unstructured)
+			var k v1alpha1.Karta
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &k); err != nil {
+				return snapshot{}, fmt.Errorf("%w: decode Karta %q: %w", ErrUnavailable, u.GetName(), err)
+			}
+			definitions = append(definitions, &k)
+		}
+	}
+	return resolve(i.catalog, definitions, i.catalogFilter, i.clusterFilter), nil
+}
+
+// health reports why the cluster source cannot be read; callers hold i.mu.
+func (i *Inventory) health() error {
+	switch {
+	case !i.clusterFilter.enabled:
+		return nil
+	case i.stopped:
+		return fmt.Errorf("%w: %w", ErrUnavailable, errStopped)
+	case i.failure != nil && (apierrors.IsForbidden(i.failure) || apierrors.IsUnauthorized(i.failure)):
+		return fmt.Errorf("%w: %w", ErrPermissionDenied, i.failure)
+	case i.failure != nil:
+		return fmt.Errorf("%w: %w", ErrUnavailable, i.failure)
+	case !i.synced:
+		return ErrNotReady
+	}
+	return nil
 }
