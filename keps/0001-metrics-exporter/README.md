@@ -69,8 +69,8 @@ karta_exporter_observation_valid{scope="resource_type",namespace="team-a",resour
 
 | Metric | All exporter-defined labels |
 | --- | --- |
-| `karta_pod_workload_info` | `namespace`, `workload_name`, `workload_group`, `workload_version`, `workload_kind`, `workload_uid`, `owner_resolution`, `pod_name`, `pod_uid`, `component`, `component_instance`, `replica_group_id`, `observation_valid`, optional `submitted_by` |
-| `karta_workload_status` | `namespace`, `workload_name`, `workload_group`, `workload_version`, `workload_kind`, `workload_uid`, `phase`, `owner_resolution`, `karta`, `karta_source`, `observation_valid`, optional `submitted_by` |
+| `karta_pod_workload_info` | `namespace`, `workload_name`, `workload_group`, `workload_version`, `workload_kind`, `workload_uid`, `owner_resolution`, `pod_name`, `pod_uid`, `component`, `component_instance`, `replica_group_id`, `observation_valid`; configured labels may be added |
+| `karta_workload_status` | `namespace`, `workload_name`, `workload_group`, `workload_version`, `workload_kind`, `workload_uid`, `phase`, `owner_resolution`, `karta`, `karta_source`, `observation_valid`; configured labels may be added |
 | `karta_workload_created_timestamp_seconds` | `namespace`, `workload_name`, `workload_uid` |
 | `karta_exporter_observation_valid` | `scope`, `namespace`, `resource_group`, `resource_version`, `resource_kind`, `workload_name`, `workload_uid`, `reason` |
 
@@ -90,7 +90,6 @@ karta_exporter_observation_valid{scope="resource_type",namespace="team-a",resour
 | `phase` | Status | Evaluated workload phase; its series value is `1` when matched and `0` otherwise. | `Running` |
 | `owner_resolution` | Pod info, Status | `resolved` after verifying the chain; `ignored_owner` at an intentional boundary; `unknown` when owner resolution fails, including denied reads. Failure reasons are reported by Health. | `unknown` after a denied owner read. |
 | `observation_valid` | Pod info, Status | `"true"` while the verification required for this observation is valid; `"false"` for a retained cached observation after failure or expiry. | `true` |
-| `submitted_by` | Pod info, Status | Optional submitter identity; see [Who submitted the workload](#who-submitted-the-workload). | `alice` |
 | `karta` | Status | Name of the selected Karta definition. | `jobset-x-k8s-io-jobset-v1alpha2` |
 | `karta_source` | Status | Origin of that definition: `catalog` for a built-in definition or `cluster` for a Karta custom resource. | `catalog` |
 | `scope` | Health | `resource_type` reports collection health per namespace + GVK, including before object names are known; it does not certify each workload evaluation. `workload` reports failures affecting a known workload; no healthy workload row is emitted. | `workload` |
@@ -130,52 +129,70 @@ Examples of component attribution:
 | LWS, worker in group 0            | `worker`        | empty                  | `0`                |
 | LWS, worker in group 1            | `worker`        | empty                  | `1`                |
 
+## Configured labels
+
+Use `exporter.labelRules` to add labels to Pod info or workload status. A rule
+names its target metrics, ordered sources and CEL expression. The evaluator
+receives the root workload or the specific Pod as `object`.
+
+```yaml
+exporter:
+  labelRules:
+    - name: team
+      metrics: [karta_pod_workload_info, karta_workload_status]
+      sources: [workload]
+      expression: |
+        has(object.metadata.labels) && "example.com/team" in object.metadata.labels
+          ? object.metadata.labels["example.com/team"] : ""
+```
+
+Pod info may read the workload, its Pod, or both in order. Workload status cannot
+use a Pod source because there is no single Pod to choose. The first nonempty
+value wins. Empty results remove the configured label. Evaluation errors remain
+visible without dropping the base metric. Built-in labels cannot be overwritten.
+
+Runtime saves evaluated labels in Store. Collector reads those saved values.
+The exporter does not capture caller identity or mutate Kubernetes objects.
+See [label configuration](../../docs/karta-metrics-exporter/configuration.md#configured-labels).
+
 ## Who submitted the workload
 
 ### Directly apply to Kubernetes
 
 Submitter capture is separate from the exporter and Karta operator. Helm installs
-`MutatingAdmissionPolicy` (MAP) and `ValidatingAdmissionPolicy` (VAP), with their
-bindings. Both policies run inside the Kubernetes API server.
+a `MutatingAdmissionPolicy` (MAP) and its binding, which run inside the
+Kubernetes API server.
 
 ```yaml
-submitterAdmission:
-  enabled: true
+admissionPolicies:
+  submitter:
+    enabled: true
+    resources:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        resources: ["jobs"]
 ```
 
 When `kubectl apply` creates a workload within capture scope, MAP records the
-authenticated caller in `karta.run.ai/submitted-by`. VAP rejects a different
-identity supplied on CREATE. Captured identity must stay protected on UPDATE,
-even after capture scope narrows. The caller can be a service account.
+authenticated caller in `karta.run.ai/submitted-by`, unless the request already
+sets it. The caller can be a service account. `annotation` changes the key.
+Objects with a controller `ownerReference` are skipped, since their creator is a
+controller, not the submitter.
 
-Kubernetes feature versions:
+Capture is best effort and never rejects a request. A supplied value is kept, so
+the annotation is a hint, not proof of identity. When a platform creates the
+workload, the caller is the platform's service account; prefer the platform's
+own user annotation in a label rule's expression. Read it through
+`object.metadata.annotations`, as described in [Configured labels](#configured-labels). See the
+[implementation design](../../docs/design/metrics-exporter/submitter-capture.md).
+
+MAP feature versions:
 
 | Policy | Alpha from | Beta from | Stable from |
 | --- | --- | --- | --- |
 | [MAP](https://github.com/kubernetes/enhancements/issues/3962) | 1.32 | 1.34 | 1.36 |
-| [VAP](https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates-removed/) | 1.26 | 1.28 | 1.30 |
-
-### Extract with your own logic
-
-`submittedByExpression` runs inside the exporter on the root workload and its
-attributed Pods. It reads labels and annotations without changing the objects.
-
-```yaml
-exporter:
-  attribution:
-    submittedByExpression: |
-      ("karta.run.ai/submitted-by" in annotations &&
-       annotations["karta.run.ai/submitted-by"] != "")
-        ? annotations["karta.run.ai/submitted-by"]
-        : ("example.com/submitted-by" in labels
-            ? labels["example.com/submitted-by"]
-            : "")
-```
-
-Pod and workload metrics share `submitted_by` when evaluation succeeds and
-nonempty identities agree. Missing, conflicting or unverified identity leaves it
-empty; disabling attribution omits the label. CEL does not authenticate identity.
 
 ## History
 
 - 2026-10-12 to 2026-10-19: Defined workload metrics, selection and submitter attribution; separated configuration and query examples into linked guides.
+- 2026-10-25: Made submitter capture a best-effort MAP with a configurable annotation; dropped the VAP and UPDATE protection.

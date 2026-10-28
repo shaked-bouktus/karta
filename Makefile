@@ -27,7 +27,7 @@ COMPONENTS := lib cli operator exporter karta-wasm release-helper
 # Every Go module in the repo. The tidy target fans out over this rather than
 # COMPONENTS because an untidy manifest in a module that ships no
 # binary (the examples, the e2e fixtures) still breaks a downstream `go get`.
-GO_MODULES := karta/sdk cli karta-wasm operator karta-metrics-exporter test/e2e hack/imagelock \
+GO_MODULES := karta/sdk cli karta-wasm operator karta-metrics-exporter karta-metrics-exporter/test/integration test/e2e hack/imagelock \
 	docs/examples/quickstart docs/examples/controller-runtime \
 	hack/e2e/operators/nim/image
 
@@ -50,6 +50,8 @@ ENVTEST_VERSION             ?= release-0.23
 GORELEASER_VERSION          ?= v2.18.3
 # Kubernetes control-plane (apiserver, etcd, kubectl) version envtest downloads.
 ENVTEST_K8S_VERSION         ?= 1.31.0
+# Control-plane version for the chart's admission policy tests; MutatingAdmissionPolicy v1 needs 1.36+.
+ENVTEST_ADMISSION_K8S_VERSION ?= 1.36.2
 
 # Tool binaries, all installed into the single LOCALBIN. The version is part of
 # the filename, and therefore part of make's target name, so bumping a version
@@ -311,11 +313,10 @@ install-cli-completion-local: ## Run install-cli-completion, preferring the kli 
 uninstall-cli-completion: ## Stop loading kli completion from your bash or zsh rc file
 	hack/kli-completion.sh uninstall
 
-.PHONY: modules-check-cli modules-check-operator modules-check-exporter
+.PHONY: modules-check-cli modules-check-operator
 modules-check-cli: MODULE := cli
 modules-check-operator: MODULE := operator
-modules-check-exporter: MODULE := karta-metrics-exporter
-modules-check-cli modules-check-operator modules-check-exporter: ## Verify the module's requirements are tidy
+modules-check-cli modules-check-operator: ## Verify the module's requirements are tidy
 	cd $(MODULE) && go mod tidy -diff
 
 .PHONY: check-cli
@@ -352,8 +353,13 @@ test-operator-integration: envtest ## Run the operator envtest suite (downloads 
 	cd operator && KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test -coverprofile=cover-integration.out ./test/integration/...
 
+.PHONY: test-chart-admission
+test-chart-admission: envtest ## Run the chart's admission policy tests against envtest (needs helm)
+	cd operator && KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_ADMISSION_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		go test -count=1 ./test/admission/...
+
 .PHONY: test-operator
-test-operator: test-operator-unit test-operator-integration ## Run the operator unit and envtest suites
+test-operator: test-operator-unit test-operator-integration test-chart-admission ## Run the operator unit and envtest suites, and the chart admission tests (needs helm)
 
 .PHONY: check-operator
 check-operator: fmt-check-operator vet-operator lint-operator modules-check-operator build-operator-e2e test-operator operator-version-smoke ## Full operator presubmit
@@ -414,29 +420,52 @@ operator-image-buildx-push: ## Build and push a multi-arch operator image via Bu
 
 ##@ Metrics exporter
 
+# The envtest suite is its own module, so envtest's dependencies stay out of
+# the exporter's go.mod and license inventory.
+EXPORTER_ENVTEST_DIR := karta-metrics-exporter/test/integration
+
 .PHONY: fmt-exporter
-fmt-exporter: ## Format the exporter module
+fmt-exporter: ## Format the exporter and its envtest modules
 	cd karta-metrics-exporter && go fmt ./...
+	cd $(EXPORTER_ENVTEST_DIR) && go fmt ./...
 
 .PHONY: fmt-check-exporter
 fmt-check-exporter: ## Check exporter formatting without modifying files
 	@set -e; \
-	cd karta-metrics-exporter; \
-	dirs="$$(go list -f '{{.Dir}}' ./...)"; \
+	dirs="$$(go -C karta-metrics-exporter list -f '{{.Dir}}' ./...) $$(go -C $(EXPORTER_ENVTEST_DIR) list -f '{{.Dir}}' ./...)"; \
 	unformatted="$$(gofmt -l $$dirs)"; \
 	test -z "$$unformatted" || { echo "go fmt required:"; echo "$$unformatted"; exit 1; }
 
 .PHONY: vet-exporter
-vet-exporter: ## go vet the exporter module
+vet-exporter: ## go vet the exporter and its envtest modules
 	cd karta-metrics-exporter && go vet ./...
+	cd $(EXPORTER_ENVTEST_DIR) && go vet ./...
 
 .PHONY: lint-exporter
-lint-exporter: golangci-lint ## Lint the exporter module
+lint-exporter: golangci-lint ## Lint the exporter and its envtest modules
 	cd karta-metrics-exporter && $(GOLANGCI_LINT) run $(GOLANGCI_LINT_FLAGS) -c $(PROJECT_DIR)/.golangci.yml
+	cd $(EXPORTER_ENVTEST_DIR) && $(GOLANGCI_LINT) run $(GOLANGCI_LINT_FLAGS) -c $(PROJECT_DIR)/.golangci.yml
+
+.PHONY: modules-check-exporter
+modules-check-exporter: ## Verify the exporter and envtest module requirements are tidy
+	cd karta-metrics-exporter && go mod tidy -diff
+	cd $(EXPORTER_ENVTEST_DIR) && go mod tidy -diff
+
+.PHONY: test-exporter-unit
+test-exporter-unit: ## Run the exporter unit tests with the race detector (no envtest binaries required)
+	cd karta-metrics-exporter && go test -race ./cmd/... ./pkg/...
+
+.PHONY: test-exporter-integration
+test-exporter-integration: envtest ## Run the exporter envtest suite (downloads control-plane binaries)
+	cd $(EXPORTER_ENVTEST_DIR) && KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		go test -race ./...
+
+.PHONY: exporter-generate-mocks
+exporter-generate-mocks: ## Regenerate exporter interface mocks with pinned Mockery
+	cd karta-metrics-exporter && go run github.com/vektra/mockery/v3@v3.8.1 --config .mockery.yaml
 
 .PHONY: test-exporter
-test-exporter: ## Run the exporter module tests
-	cd karta-metrics-exporter && go test ./...
+test-exporter: test-exporter-unit test-exporter-integration ## Run the exporter unit and envtest suites
 
 .PHONY: build-exporter
 build-exporter: $(LOCALBIN) ## Build the karta-metrics-exporter binary for the host OS/arch
@@ -565,7 +594,7 @@ tidy: ## Run go mod tidy in every module (rewrites go.mod and go.sum)
 # status is captured into a variable rather than tested inline, so that a git
 # that cannot run is a hard error. Inline, a failing git yields empty output and
 # the emptiness check passes, reporting success having verified nothing.
-validate: tidy lib-generate lib-manifests lib-generate-mocks generate-licenses generate-samples ## Fail if any generated or module manifest is stale or untracked
+validate: tidy lib-generate lib-manifests lib-generate-mocks exporter-generate-mocks generate-licenses generate-samples ## Fail if any generated or module manifest is stale or untracked
 	@set -e; \
 	status="$$(git status --porcelain)"; \
 	test -z "$$status" || { echo "$$status"; \
@@ -603,6 +632,8 @@ CRD_CONFIGMAP_MAX_BYTES ?= 1000000
 helm-validate: ## Validate the chart renders and the CRD ConfigMap fits in etcd
 	helm template $(KARTA_CHART_DIR)
 	helm template $(KARTA_CHART_DIR) --set global.fipsMode=only
+	helm template $(KARTA_CHART_DIR) --set admissionPolicies.submitter.enabled=true \
+		--set admissionPolicies.submitter.apiVersion=v1 --set-json 'admissionPolicies.submitter.resources=[{"apiGroups":["batch"],"apiVersions":["v1"],"resources":["jobs"]}]'
 	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; helm template $(KARTA_CHART_DIR) -s templates/hooks/pre/crd-upgrader-configmap.yaml > "$$tmp"; s=$$(wc -c < "$$tmp"); echo "crd-upgrader ConfigMap: $$s bytes (max $(CRD_CONFIGMAP_MAX_BYTES))"; test $$s -le $(CRD_CONFIGMAP_MAX_BYTES) || { echo "error: CRD ConfigMap is $$s bytes, over the $(CRD_CONFIGMAP_MAX_BYTES) limit; it must fit in a single ~1 MiB etcd object"; exit 1; }
 
 ##@ Air-gap

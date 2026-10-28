@@ -5,7 +5,7 @@
 
 Proposed configuration for [KEP-0001](../../keps/0001-metrics-exporter/README.md).
 The exporter runs separately from the Karta controller. Helm configures its
-definitions, observation scope, submitter attribution and metric delivery.
+definitions, observation scope, configured labels and metric delivery.
 
 ## Helm values
 
@@ -47,7 +47,6 @@ exporter:
       enabled: true # Cluster-installed Karta definitions; default true.
       include: []
       exclude: []
-      labelSelector: {} # Select cluster Karta definitions by their labels.
   # Watch Pods and workload objects only in matching namespaces.
   namespaceSelector: # Default null or {}: all namespaces.
     matchExpressions:
@@ -76,16 +75,19 @@ exporter:
     - example.com/v1/PlatformWrapper
   requiredKinds: [] # Optional expected APIs; failed checks mark dependent observations unhealthy.
     # Example: ["jobset.x-k8s.io/v1alpha2/JobSet"]
-  # Read the submitter from workload and Pod metadata with CEL.
-  attribution:
-    submittedByExpression: | # Default "": attribution disabled.
-      ("karta.run.ai/submitted-by" in annotations &&
-       annotations["karta.run.ai/submitted-by"] != "")
-        ? annotations["karta.run.ai/submitted-by"]
-        : ("example.com/submitted-by" in labels
-            ? labels["example.com/submitted-by"]
-            : "")
-    limits: {} # Optional evaluation bounds; see Submitter attribution.
+  labelRules: [] # Extra labels for Pod info and workload status.
+  # Example entry: read example.com/team from the workload object.
+  # - name: team
+  #   metrics: [karta_pod_workload_info, karta_workload_status]
+  #   sources: [workload]
+  #   expression: |
+  #     has(object.metadata.labels) && "example.com/team" in object.metadata.labels
+  #       ? object.metadata.labels["example.com/team"] : ""
+  # Bounds for label expressions, evaluation and returned values.
+  genericLabelEvaluationLimits:
+    costLimit: 10000
+    maxExpressionBytes: 4096
+    maxResultBytes: 1024
   metrics:
     workloadPhases: ["all"] # Emit every workload phase as a 0/1 series.
   # Let Prometheus Operator discover and scrape the exporter.
@@ -107,7 +109,6 @@ catalog. `http.port` serves `/healthz` and `/readyz` in both delivery modes, plu
 | `objectSelector` | Resolved workload roots by their labels. |
 | `podSelector` | Pods whose attribution rows are exported, using each Pod's labels. |
 | `resourceRules` / `excludeResourceRules` | Root API types, using group, version and plural resource name. Exclusions win. |
-| `kartaDefinitionSource.cluster.labelSelector` | Cluster Karta definitions by their labels. |
 | Definition-source `include` / `exclude` | Definition names. Empty includes mean all; exclusions win. |
 
 Use [Kubernetes label selectors](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors)
@@ -157,8 +158,7 @@ duplicate observations.
 
 Source filters apply before precedence. A selected cluster Karta overrides a
 selected catalog definition for the same group/kind. Disabled sources contribute
-none. Cluster definition names and their label selector must both match. Ties use
-oldest creation time, then name.
+none. Ties use oldest creation time, then name.
 
 The catalog excludes `core-pod-v1` by default. Clearing that exclusion, or selecting
 a cluster Pod Karta, enables bare-Pod workloads. `objectSelector` also applies to
@@ -170,126 +170,93 @@ A Karta definition on an intermediate owner does not by itself stop the walk.
 An ignored owner can still be selected independently. `requiredKinds` checks
 remain active; failed checks invalidate dependent observations.
 
-## Submitter attribution
+## Configured labels
 
-`attribution.submittedByExpression` is a CEL expression that returns the
-submitter identity as a string. The exporter compiles it once at startup.
-It runs on the root workload and its attributed Pods, as described in
-[Who submitted the workload](../../keps/0001-metrics-exporter/README.md#who-submitted-the-workload).
+`labelRules` adds named labels to `karta_pod_workload_info` and
+`karta_workload_status`. Each rule provides metric names, ordered sources and a
+CEL expression. Sources are `workload` and `pod`. Status rules cannot use `pod`.
+Expressions read the supplied full object through `object`; they do not call
+Kubernetes or mutate it. Guard optional fields with `has(...)`.
 
-The expression can read three maps of strings:
+The command validates rule names, metric/source combinations and CEL at startup.
+The CEL evaluator is implemented. Resolver execution and exporting the resolved
+labels are not implemented yet.
 
-| Variable | Contents |
-| --- | --- |
-| `labels` | The object's labels. |
-| `annotations` | The object's annotations. |
-| `resource` | `namespace`, `name`, `group`, `version` and `kind` of the object. |
+The chart renders `labelRules` and `genericLabelEvaluationLimits` into the mounted
+config file. Rules default to `[]`. Limits default to 10000 cost units, 4096
+expression bytes and 1024 result bytes. Zero limits use these defaults.
 
-`resource.kind` lets one expression read different metadata per workload type.
-Guard each key with `in`; reading a missing key is an evaluation error. An empty
-result means unknown identity. An empty expression disables attribution.
-A non-string result or invalid CEL rejects startup. CEL does not authenticate
-identity, and the exporter makes no API reads and never changes the objects.
-
-`attribution.limits` bounds each evaluation:
-
-| Setting under `exporter.attribution.limits` | Default | Bounds |
-| --- | --- | --- |
-| `costLimit` | 10000 | CEL cost units one evaluation may spend. |
-| `maxExpressionBytes` | 4096 | Length of `submittedByExpression`. |
-| `maxIdentityBytes` | 1024 | Length of one extracted identity. |
-| `interruptCheckFrequency` | 100 | Comprehension iterations between cancellation checks. |
-
-A limit of 0 selects its default, except `interruptCheckFrequency`: 0 rejects
-startup, because CEL then stops checking for cancellation. Negative limits
-reject startup. An evaluation that exceeds a limit or is cancelled yields no
-identity.
-
-### How the exporter reads attribution settings
-
-Helm renders `exporter.attribution` unchanged into a ConfigMap. The exporter
-mounts it read-only and reads it with `--config`. The exporter needs no
-ConfigMap RBAC. A configuration change rolls the exporter Pod, since the file is
-read once at startup. Unknown keys and files with more than one YAML document
-reject startup.
-
-Each setting also has a command-line flag and an environment variable:
-
-| Config file key | Flag | Environment variable |
-| --- | --- | --- |
-| (config file path) | `--config` | `KARTA_EXPORTER_CONFIG` |
-| `attribution.submittedByExpression` | `--submitted-by-expression` | `KARTA_EXPORTER_SUBMITTED_BY_EXPRESSION` |
-| `attribution.limits.costLimit` | `--submitter-cost-limit` | `KARTA_EXPORTER_SUBMITTER_COST_LIMIT` |
-| `attribution.limits.maxExpressionBytes` | `--submitter-max-expression-bytes` | `KARTA_EXPORTER_SUBMITTER_MAX_EXPRESSION_BYTES` |
-| `attribution.limits.maxIdentityBytes` | `--submitter-max-identity-bytes` | `KARTA_EXPORTER_SUBMITTER_MAX_IDENTITY_BYTES` |
-| `attribution.limits.interruptCheckFrequency` | `--submitter-interrupt-check-frequency` | `KARTA_EXPORTER_SUBMITTER_INTERRUPT_CHECK_FREQUENCY` |
-
-A flag wins over its environment variable, which wins over the config file,
-which wins over the default. A flag or variable applies only when set to a
-non-blank value, so an empty or whitespace-only variable does not clear the
-file's setting. Flags or
-environment variables alone are enough to run the exporter outside the cluster:
-
-```sh
-karta-metrics-exporter \
-  --submitted-by-expression '"example.com/owner" in labels ? labels["example.com/owner"] : ""'
-```
-
-The chart passes only `--config`. `karta-metrics-exporter --help` lists every
-flag with its default and environment variable.
+See the [evaluator configuration](../../karta-metrics-exporter/pkg/labelevaluator/README.md#configuration)
+for a complete example, flags, environment variables and precedence.
 
 ## Submitter admission
 
-`submitterAdmission` captures direct Kubernetes callers. Exporter CEL extraction
-is configured separately, as described in [Submitter attribution](#submitter-attribution).
+`admissionPolicies.submitter` captures direct Kubernetes callers. Exporter label
+extraction is configured separately, as described in [Configured labels](#configured-labels).
 
-Capture uses `MutatingAdmissionPolicy` and `ValidatingAdmissionPolicy` with their
-bindings. Both run in the API server without a Karta operator. MAP is
+Capture uses a `MutatingAdmissionPolicy` and its binding. It runs in the API
+server without a Karta operator. MAP is
 [stable in Kubernetes 1.36+](https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/);
 [1.34-1.35 requires beta feature/API enablement](https://v1-35.docs.kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/).
-VAP is [stable since 1.30](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/).
-The chart rejects capture if required APIs are unavailable.
 
 This example captures Deployments and Jobs in opted-in namespaces:
 
 ```yaml
-submitterAdmission:
-  enabled: true
-  matchConstraints:
-    namespaceSelector:
+admissionPolicies:
+  submitter:
+    enabled: true # Capture on CREATE; default false.
+    annotation: karta.run.ai/submitted-by # Annotation key that receives the caller.
+    apiVersion: "" # MAP version, v1 or v1beta1; empty detects it from the cluster.
+    resources: # Group, version and plural resource; the chart sets operations and scope.
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        resources: ["deployments"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        resources: ["jobs"]
+    excludeResources: [] # Same form; exclusions win.
+    namespaceSelector: # Default: the opt-in label below. Set matchLabels: null to drop it.
       matchLabels:
         karta.run.ai/capture-submitter: "true"
       matchExpressions:
         - key: kubernetes.io/metadata.name
           operator: NotIn
           values: [kube-system, karta-system]
-    resourceRules:
-      - operations: ["CREATE"]
-        apiGroups: ["apps"]
-        apiVersions: ["v1"]
-        resources: ["deployments"]
-        scope: Namespaced
-      - operations: ["CREATE"]
-        apiGroups: ["batch"]
-        apiVersions: ["v1"]
-        resources: ["jobs"]
-        scope: Namespaced
-    excludeResourceRules: []
-  matchConditions: [] # Optional CEL conditions on the admission request.
+    objectSelector: {} # Workload labels; {} matches all.
+    matchConditions: [] # Optional CEL conditions on the CREATE request.
 ```
 
 Capture follows [native Kubernetes matching](https://github.com/kubernetes/kubernetes/blob/v1.36.0/staging/src/k8s.io/api/admissionregistration/v1/types.go#L554-L642).
-Rules select namespaced CREATE requests. Exclusions win and all conditions must
-pass. An empty namespace selector matches all namespaces. Direct Pod capture uses
-group `""`, version `v1`, resource `pods`. These settings do not filter exporter watches.
+It selects namespaced CREATE requests. Exclusions win and all conditions must
+pass. Objects with a controller `ownerReference` are skipped: a controller that
+copies a parent's annotations onto a child is not the submitter. Objects the
+annotation would push over the 256 KiB annotation size limit are skipped. An empty
+namespace selector matches all namespaces. Helm merges maps with the defaults, so
+match all namespaces with `matchLabels: null`, not `{}`. Condition names starting
+with `karta-` are reserved. Direct Pod capture uses
+group `""`, version `v1`, resource `pods`. Subresources cannot be listed. These
+settings do not filter exporter watches.
 
-Mutation fills a missing `karta.run.ai/submitted-by` annotation. Within capture
-scope, CREATE validation rejects a supplied value that differs from the caller.
-Captured identity must stay protected from UPDATE overrides or removal, including
-after capture scope narrows. The exact UPDATE matching rules are TBD in the
-[implementation design](../design/metrics-exporter/README.md).
-Administrators control namespace labels and policy settings. Policies use
-`failurePolicy: Fail`; validation bindings use `validationActions: [Deny]`.
+Mutation fills a missing `annotation` key, `karta.run.ai/submitted-by` by
+default, with the caller's username. The key must be a valid annotation key.
+When it changes, update the `labelRules` expression to read the new key from
+`object.metadata.annotations`. A service account appears as
+`system:serviceaccount:<namespace>:<name>`.
+A supplied value is kept, so the annotation is a hint, not proof of identity.
+
+Capture is best effort and never rejects a request. The policy uses
+`failurePolicy: Ignore`: if it is unavailable, or a CEL expression fails to
+evaluate, the request is admitted without the annotation. Administrators control
+namespace labels and policy settings.
+
+With `apiVersion` empty, the chart detects the API and fails if the cluster does
+not serve it. `helm template` and GitOps renderers see no cluster APIs, so set
+`apiVersion` when using them.
+
+To enable capture on an existing release, upgrade with
+`--reset-then-reuse-values` (Helm 3.14+), not `--reuse-values`. `--reuse-values`
+skips new chart defaults, so a missing `namespaceSelector` would capture in every
+namespace.
 
 ## Metric delivery
 
