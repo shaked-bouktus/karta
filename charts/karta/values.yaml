@@ -47,7 +47,7 @@ exporter:
       enabled: false
       include: []
       exclude: []
-    # Karta objects in the cluster, named by metadata.name. A selected one
+    # Karta objects in the cluster, named by metadata.name. A cluster one
     # replaces the built-in catalog definition for the same group and kind;
     # an excluded one does not, so exclude a kind in both sources to drop it.
     # Grants read access to Kartas.
