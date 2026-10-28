@@ -8,11 +8,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -22,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic/fake"
@@ -30,6 +35,60 @@ import (
 
 	v1alpha1 "github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/api/runai/v1alpha1"
 )
+
+var (
+	deploymentGVK  = schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+	jobGVK         = schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"}
+	podGVK         = schema.GroupVersionKind{Version: "v1", Kind: "Pod"}
+	dynamoAlphaGVK = schema.GroupVersionKind{Group: "nvidia.com", Version: "v1alpha1", Kind: "DynamoGraphDeployment"}
+	dynamoBetaGVK  = schema.GroupVersionKind{Group: "nvidia.com", Version: "v1beta1", Kind: "DynamoGraphDeployment"}
+
+	epoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+)
+
+func newKarta(name string, gvk schema.GroupVersionKind, opts ...func(*v1alpha1.Karta)) *v1alpha1.Karta {
+	k := newRootlessKarta(name)
+	k.Spec.StructureDefinition.RootComponent.Kind = &v1alpha1.GroupVersionKind{
+		Group:   gvk.Group,
+		Version: gvk.Version,
+		Kind:    gvk.Kind,
+	}
+	for _, opt := range opts {
+		opt(k)
+	}
+	return k
+}
+
+func newRootlessKarta(name string) *v1alpha1.Karta {
+	return &v1alpha1.Karta{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: v1alpha1.KartaSpec{
+			StructureDefinition: v1alpha1.StructureDefinition{
+				RootComponent: v1alpha1.ComponentDefinition{Name: "root"},
+			},
+		},
+	}
+}
+
+func createdAt(t time.Time) func(*v1alpha1.Karta) {
+	return func(k *v1alpha1.Karta) { k.CreationTimestamp = metav1.NewTime(t) }
+}
+
+func withLabels(l map[string]string) func(*v1alpha1.Karta) {
+	return func(k *v1alpha1.Karta) { k.Labels = l }
+}
+
+func fromCluster(uid, resourceVersion string) func(*v1alpha1.Karta) {
+	return func(k *v1alpha1.Karta) {
+		k.UID = types.UID(uid)
+		k.ResourceVersion = resourceVersion
+	}
+}
+
+// invalid empties the root component name, which the SDK validator rejects.
+func invalid(k *v1alpha1.Karta) {
+	k.Spec.StructureDefinition.RootComponent.Name = ""
+}
 
 // The reflector backs off for up to a few seconds between attempts.
 const (
@@ -47,7 +106,7 @@ var (
 // pausedStore holds its first Replace until released, so a spec can act after
 // a streaming list ends and before the store applies it.
 type pausedStore struct {
-	cache.Store
+	cache.ReflectorStore
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -58,7 +117,7 @@ func (s *pausedStore) Replace(list []any, resourceVersion string) error {
 		close(s.entered)
 		<-s.release
 	})
-	return s.Store.Replace(list, resourceVersion)
+	return s.ReflectorStore.Replace(list, resourceVersion)
 }
 
 // lateStatus holds the forwarder while it decodes a watch error, so a spec can
@@ -128,7 +187,7 @@ var _ = Describe("Inventory", func() {
 	It("serves a catalog-only configuration before Run and after it returns", func() {
 		inventory, err := New(nil, Options{Catalog: SourceOptions{Enabled: true}})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(inventory.Ready()).To(Succeed())
+		Expect(inventoryHealth(inventory)()).To(Succeed())
 		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
 
 		start(inventory)()
@@ -144,19 +203,16 @@ var _ = Describe("Inventory", func() {
 		inventory, err := New(newFakeClient(), withCatalog)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(inventory.Ready()).To(MatchError(ErrNotReady))
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrNotReady))
 		_, err = inventory.Lookup(jobGVK)
 		Expect(err).To(MatchError(ErrNotReady))
-		listed, err := inventory.Selections()
-		Expect(err).To(MatchError(ErrNotReady))
-		Expect(listed).To(BeNil())
 	})
 
 	It("refuses a second Run", func() {
 		inventory, err := New(newFakeClient(), withCatalog)
 		Expect(err).NotTo(HaveOccurred())
 		start(inventory)
-		Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 		Expect(inventory.Run(context.Background())).To(MatchError(ContainSubstring("already started")))
 	})
@@ -177,14 +233,14 @@ var _ = Describe("Inventory", func() {
 		It("serves cluster definitions once the initial list is in", func() {
 			start(inventory)
 
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 			Expect(lookupOrigin(inventory, jobGVK)).To(Equal(Origin{Source: SourceCluster, Name: "cluster-job", UID: "uid-1", ResourceVersion: "1"}))
 			Expect(lookupOrigin(inventory, deploymentGVK)).To(Equal(Origin{Source: SourceCatalog, Name: "apps-deployment-v1"}))
 		})
 
 		It("follows adds, updates and deletes, and serves the catalog again after a delete", func() {
 			start(inventory)
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 			resource := client.Resource(kartasGVR)
 			ctx := context.Background()
 
@@ -218,7 +274,7 @@ var _ = Describe("Inventory", func() {
 			_, err := resource.Create(context.Background(), unstructuredKarta(newer), metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
 			start(inventory)
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 			Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("cluster-job"))
 
 			Expect(resource.Delete(context.Background(), "cluster-job", metav1.DeleteOptions{})).To(Succeed())
@@ -233,7 +289,7 @@ var _ = Describe("Inventory", func() {
 
 		It("reports an invalid cluster winner without falling back", func() {
 			start(inventory)
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 			_, err := client.Resource(kartasGVR).Update(context.Background(),
 				unstructuredKarta(newKarta("cluster-job", jobGVK, fromCluster("uid-1", "2"), invalid)), metav1.UpdateOptions{})
@@ -243,12 +299,12 @@ var _ = Describe("Inventory", func() {
 				_, err := inventory.Lookup(jobGVK)
 				return err
 			}, eventuallyTimeout, eventuallyInterval).Should(MatchError(ErrInvalidDefinition))
-			Expect(inventory.Ready()).To(Succeed())
+			Expect(inventoryHealth(inventory)()).To(Succeed())
 		})
 
 		It("fails closed on a Karta it cannot decode, and recovers once it is gone", func() {
 			start(inventory)
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 			resource := client.Resource(kartasGVR)
 			broken := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": "run.ai/v1alpha1", "kind": "Karta",
@@ -258,28 +314,28 @@ var _ = Describe("Inventory", func() {
 
 			_, err := resource.Create(context.Background(), broken, metav1.CreateOptions{})
 			Expect(err).NotTo(HaveOccurred())
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(ContainSubstring(`decode Karta "broken"`)))
-			Expect(inventory.Ready()).To(MatchError(ErrUnavailable))
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(MatchError(ContainSubstring(`decode Karta "broken"`)))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
 			_, err = inventory.Lookup(jobGVK)
 			Expect(err).To(MatchError(ErrUnavailable))
 
 			Expect(resource.Delete(context.Background(), "broken", metav1.DeleteOptions{})).To(Succeed())
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 		})
 
 		It("reports the source as stopped after Run returns", func() {
 			cancel := start(inventory)
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 			cancel()
 
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(ErrUnavailable))
-			Expect(inventory.Ready()).To(MatchError(errStopped))
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(MatchError(ErrUnavailable))
+			Expect(inventoryHealth(inventory)()).To(MatchError(errStopped))
 		})
 
 		It("serves concurrent readers while definitions change", func() {
 			start(inventory)
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 			resource := client.Resource(kartasGVR)
 
 			var wg sync.WaitGroup
@@ -296,8 +352,6 @@ var _ = Describe("Inventory", func() {
 						sel, err := inventory.Lookup(jobGVK)
 						Expect(err).NotTo(HaveOccurred())
 						Expect(sel.Definition).NotTo(BeNil())
-						_, err = inventory.Selections()
-						Expect(err).NotTo(HaveOccurred())
 					}
 				})
 			}
@@ -362,7 +416,7 @@ var _ = Describe("Inventory", func() {
 				fail(cause)
 				start(inventory)
 
-				Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(want))
+				Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(MatchError(want))
 				_, err := inventory.Lookup(jobGVK)
 				Expect(err).To(MatchError(want))
 				Expect(err).To(MatchError(cause))
@@ -376,17 +430,17 @@ var _ = Describe("Inventory", func() {
 		It("recovers once LIST succeeds again", func() {
 			fail(apierrors.NewForbidden(kartasGR, "", errors.New("no list permission")))
 			start(inventory)
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(ErrPermissionDenied))
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(MatchError(ErrPermissionDenied))
 
 			listErr.Store(nil)
 
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 			Expect(lookupOrigin(inventory, jobGVK).Source).To(Equal(SourceCluster))
 		})
 
 		It("reports a refused watch, and recovers through a relist rather than a resumed watch that has not replayed", func() {
 			start(inventory)
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 			Expect(lookupOrigin(inventory, deploymentGVK)).To(Equal(Origin{Source: SourceCatalog, Name: "apps-deployment-v1"}))
 			resumable := established()
 
@@ -400,7 +454,7 @@ var _ = Describe("Inventory", func() {
 			resumable.Action(watch.Bookmark, bookmark)
 			resumable.Stop()
 
-			Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(ErrUnavailable))
+			Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(MatchError(ErrUnavailable))
 			_, err := inventory.Lookup(jobGVK)
 			Expect(err).To(MatchError(ErrUnavailable))
 
@@ -435,13 +489,11 @@ var _ = Describe("Inventory", func() {
 				})
 				inventory, err := New(client, withCatalog)
 				Expect(err).NotTo(HaveOccurred())
-				paused := &pausedStore{Store: cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc), entered: make(chan struct{}), release: make(chan struct{})}
-				store := observedStore{Store: paused, inventory: inventory}
-				inventory.update(func() { inventory.store = store })
+				paused := &pausedStore{ReflectorStore: reflectorStore{inventory: inventory}, entered: make(chan struct{}), release: make(chan struct{})}
 				// Without the fake client's opt-out, the reflector uses streaming lists.
 				reflector := cache.NewReflectorWithOptions(
 					cache.ToListWatcherWithWatchListSemantics(inventory.listWatch(client.Resource(kartasGVR)), nil),
-					&unstructured.Unstructured{}, store, cache.ReflectorOptions{})
+					&unstructured.Unstructured{}, paused, cache.ReflectorOptions{})
 				ctx, cancel := context.WithCancel(context.Background())
 				done := make(chan struct{})
 				go func() {
@@ -469,17 +521,17 @@ var _ = Describe("Inventory", func() {
 				Eventually(paused.entered, eventuallyTimeout).Should(BeClosed())
 
 				first.Error(&cause)
-				Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(want))
+				Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(MatchError(want))
 
 				release()
 
 				var second *watch.RaceFreeFakeWatcher
 				Eventually(streams, eventuallyTimeout).Should(Receive(&second))
-				Expect(inventory.Ready()).To(MatchError(want))
+				Expect(inventoryHealth(inventory)()).To(MatchError(want))
 				Expect(resumed.Load()).To(BeZero())
 
 				sendInitialEvents(second)
-				Eventually(inventory.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+				Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 				Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("cluster-job"))
 			},
 			Entry("forbidden", apierrors.NewForbidden(kartasGR, "", errors.New("permission revoked")).ErrStatus, ErrPermissionDenied),
@@ -492,7 +544,7 @@ var _ = Describe("Inventory", func() {
 		var (
 			ctx       = context.Background()
 			inventory *Inventory
-			store     observedStore
+			store     reflectorStore
 			lw        *cache.ListWatch
 			listErr   atomic.Pointer[error]
 			watchErr  atomic.Pointer[error]
@@ -540,18 +592,17 @@ var _ = Describe("Inventory", func() {
 			var err error
 			inventory, err = New(client, withCatalog)
 			Expect(err).NotTo(HaveOccurred())
-			store = observedStore{Store: cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc), inventory: inventory}
-			inventory.update(func() { inventory.store = store })
+			store = reflectorStore{inventory: inventory}
 			lw = inventory.listWatch(client.Resource(kartasGVR))
 		})
 
 		It("stays pending after a successful LIST until Replace applies it", func() {
 			list()
-			Expect(inventory.Ready()).To(MatchError(ErrNotReady))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrNotReady))
 
 			replace()
 
-			Expect(inventory.Ready()).To(Succeed())
+			Expect(inventoryHealth(inventory)()).To(Succeed())
 		})
 
 		It("keeps a LIST failure past a successful LIST, until an empty Replace applies fresh data", func() {
@@ -560,18 +611,18 @@ var _ = Describe("Inventory", func() {
 			denied := error(apierrors.NewForbidden(kartasGR, "", errors.New("revoked")))
 			listErr.Store(&denied)
 			list()
-			Expect(inventory.Ready()).To(MatchError(ErrPermissionDenied))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrPermissionDenied))
 
 			listErr.Store(nil)
 			list()
 
-			Expect(inventory.Ready()).To(MatchError(ErrPermissionDenied))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrPermissionDenied))
 			_, err := inventory.Lookup(jobGVK)
 			Expect(err).To(MatchError(ErrPermissionDenied))
 
 			replace()
 
-			Expect(inventory.Ready()).To(Succeed())
+			Expect(inventoryHealth(inventory)()).To(Succeed())
 			Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
 		})
 
@@ -580,16 +631,16 @@ var _ = Describe("Inventory", func() {
 			down := error(apierrors.NewServiceUnavailable("restarting"))
 			listErr.Store(&down)
 			list()
-			Expect(inventory.Ready()).To(MatchError(ErrUnavailable))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
 
 			listErr.Store(nil)
 			watchCall(true)
 
-			Expect(inventory.Ready()).To(MatchError(ErrUnavailable))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
 
 			replace(newKarta("cluster-job", jobGVK))
 
-			Expect(inventory.Ready()).To(Succeed())
+			Expect(inventoryHealth(inventory)()).To(Succeed())
 			Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("cluster-job"))
 		})
 
@@ -601,8 +652,8 @@ var _ = Describe("Inventory", func() {
 
 				watchCall(streaming)
 
-				Expect(inventory.Ready()).To(MatchError(ErrUnavailable))
-				Expect(inventory.Ready()).To(MatchError(refused))
+				Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
+				Expect(inventoryHealth(inventory)()).To(MatchError(refused))
 			},
 			Entry("a resumed watch", false),
 			Entry("a streaming list, retried without falling back to LIST", true),
@@ -610,16 +661,18 @@ var _ = Describe("Inventory", func() {
 
 		It("does not let a later page clear a failure recorded after its list began", func() {
 			list()
-			inventory.update(func() { inventory.fail(apierrors.NewServiceUnavailable("after the first page")) })
+			inventory.mu.Lock()
+			inventory.fail(apierrors.NewServiceUnavailable("after the first page"))
+			inventory.mu.Unlock()
 			_, err := lw.ListWithContextFunc(ctx, metav1.ListOptions{Continue: "page-2"})
 			Expect(err).NotTo(HaveOccurred())
 
 			replace()
 
-			Expect(inventory.Ready()).To(MatchError(ErrUnavailable))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
 			list()
 			replace()
-			Expect(inventory.Ready()).To(Succeed())
+			Expect(inventoryHealth(inventory)()).To(Succeed())
 		})
 
 		It("drops an error from a watch stopped before a fresh list", func() {
@@ -644,14 +697,16 @@ var _ = Describe("Inventory", func() {
 			release()
 
 			Eventually(w.ResultChan(), eventuallyTimeout).Should(BeClosed())
-			Expect(inventory.Ready()).To(Succeed())
+			Expect(inventoryHealth(inventory)()).To(Succeed())
 		})
 
 		It("logs the unkeyable and unmatched-include reports only when they change", func() {
 			var logs bytes.Buffer
 			inventory.log = slog.New(slog.NewTextHandler(&logs, nil))
 			var err error
-			_, inventory.clusterFilter, err = Options{Cluster: SourceOptions{Enabled: true, Include: []string{"rootless", "missing"}}}.compile()
+			inventory, err = New(newFakeClient(), Options{Cluster: SourceOptions{Enabled: true, Include: []string{"rootless", "missing"}}})
+			store = reflectorStore{inventory: inventory}
+			inventory.log = slog.New(slog.NewTextHandler(&logs, nil))
 			Expect(err).NotTo(HaveOccurred())
 			unkeyable := func() int { return strings.Count(logs.String(), "whose root has no version or kind") }
 			unmatched := func() int { return strings.Count(logs.String(), "include names match no Karta") }
@@ -680,11 +735,11 @@ var _ = Describe("Inventory", func() {
 			watchErr.Store(&rejected)
 
 			watchCall(true)
-			Expect(inventory.Ready()).To(MatchError(ErrNotReady))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrNotReady))
 
 			replace()
 			watchCall(true)
-			Expect(inventory.Ready()).To(Succeed())
+			Expect(inventoryHealth(inventory)()).To(Succeed())
 		})
 
 		It("records an error sent on an established watch before passing it on, and passes on every event in order", func() {
@@ -702,7 +757,7 @@ var _ = Describe("Inventory", func() {
 			Eventually(w.ResultChan(), eventuallyTimeout).Should(Receive(&event))
 			Expect(event.Type).To(Equal(watch.Error))
 
-			Expect(inventory.Ready()).To(MatchError(ErrPermissionDenied))
+			Expect(inventoryHealth(inventory)()).To(MatchError(ErrPermissionDenied))
 		})
 
 		It("stops the server's watch and closes when stopped with an event still pending", func() {
@@ -716,5 +771,656 @@ var _ = Describe("Inventory", func() {
 			Eventually(server.IsStopped, eventuallyTimeout, eventuallyInterval).Should(BeTrue())
 			Eventually(w.ResultChan(), eventuallyTimeout).Should(BeClosed())
 		})
+	})
+})
+
+var _ = Describe("Inventory store updates", func() {
+	It("removes an old group-kind entry when a definition changes kind", func() {
+		inventory, err := New(newFakeClient(), withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		store := reflectorStore{inventory: inventory}
+		Expect(store.Replace([]any{unstructuredKarta(newKarta("moving", jobGVK))}, "1")).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("moving"))
+
+		Expect(store.Update(unstructuredKarta(newKarta("moving", deploymentGVK)))).To(Succeed())
+
+		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+		Expect(lookupOrigin(inventory, deploymentGVK).Name).To(Equal("moving"))
+	})
+
+	It("rechecks label filtering when a definition enters or leaves the selection", func() {
+		options := withCatalog
+		options.Cluster.LabelSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"team": "x"}}
+		inventory, err := New(newFakeClient(), options)
+		Expect(err).NotTo(HaveOccurred())
+		store := reflectorStore{inventory: inventory}
+		Expect(store.Replace([]any{unstructuredKarta(newKarta("selected", jobGVK))}, "1")).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+
+		Expect(store.Update(unstructuredKarta(newKarta("selected", jobGVK, withLabels(map[string]string{"team": "x"}))))).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("selected"))
+		Expect(store.Update(unstructuredKarta(newKarta("selected", jobGVK)))).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+	})
+
+	It("recovers from a decode error when the same definition is repaired", func() {
+		inventory, err := New(newFakeClient(), withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		store := reflectorStore{inventory: inventory}
+		broken := unstructuredKarta(newKarta("repaired", jobGVK))
+		broken.Object["spec"] = "not-an-object"
+		Expect(store.Replace([]any{broken}, "1")).To(Succeed())
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
+
+		Expect(store.Update(unstructuredKarta(newKarta("repaired", jobGVK)))).To(Succeed())
+
+		Expect(inventoryHealth(inventory)()).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("repaired"))
+	})
+
+})
+
+var _ = Describe("WaitLoaded", func() {
+	It("waits for a delayed initial list and releases every waiter after applying it", func() {
+		client := newFakeClient(unstructuredKarta(newKarta("cluster-job", jobGVK)))
+		entered, release := make(chan struct{}), make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		client.PrependReactor("list", "kartas", func(ktesting.Action) (bool, runtime.Object, error) {
+			close(entered)
+			<-release
+			return false, nil, nil
+		})
+		inventory, err := New(client, withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		start(inventory)
+		DeferCleanup(unblock)
+		Eventually(entered, eventuallyTimeout).Should(BeClosed())
+		ctx, cancel := context.WithTimeout(context.Background(), eventuallyTimeout)
+		defer cancel()
+		results := make(chan error, 8)
+		for range cap(results) {
+			go func() { results <- inventory.WaitLoaded(ctx) }()
+		}
+		Consistently(results, 100*time.Millisecond).ShouldNot(Receive())
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrNotReady))
+
+		unblock()
+
+		for range cap(results) {
+			Eventually(results, eventuallyTimeout).Should(Receive(BeNil()))
+		}
+		Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("cluster-job"))
+	})
+
+	It("loads an empty list and serves the catalog", func() {
+		inventory, err := New(newFakeClient(), withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		start(inventory)
+		ctx, cancel := context.WithTimeout(context.Background(), eventuallyTimeout)
+		defer cancel()
+
+		Expect(inventory.WaitLoaded(ctx)).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+	})
+
+	It("cancels one waiter without canceling another or starting Run", func() {
+		inventory, err := New(newFakeClient(), withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		ctx, cancel := context.WithCancel(context.Background())
+		canceled := make(chan error, 1)
+		go func() { canceled <- inventory.WaitLoaded(ctx) }()
+		otherCtx, otherCancel := context.WithTimeout(context.Background(), eventuallyTimeout)
+		defer otherCancel()
+		other := make(chan error, 1)
+		go func() { other <- inventory.WaitLoaded(otherCtx) }()
+
+		cancel()
+
+		Eventually(canceled, eventuallyTimeout).Should(Receive(MatchError(context.Canceled)))
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrNotReady))
+		Expect(other).NotTo(Receive())
+		start(inventory)
+		Eventually(other, eventuallyTimeout).Should(Receive(BeNil()))
+	})
+
+	It("returns immediately for catalog-only inventories before Run", func() {
+		inventory, err := New(nil, Options{Catalog: SourceOptions{Enabled: true}})
+		Expect(err).NotTo(HaveOccurred())
+		ctx, cancel := context.WithTimeout(context.Background(), eventuallyTimeout)
+		defer cancel()
+
+		Expect(inventory.WaitLoaded(ctx)).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+	})
+
+	It("releases waiters when Run stops before the first list succeeds", func() {
+		client := newFakeClient()
+		client.PrependReactor("list", "kartas", func(ktesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewServiceUnavailable("not yet available")
+		})
+		inventory, err := New(client, withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		cancelRun := start(inventory)
+		Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(MatchError(ErrUnavailable))
+		ctx, cancel := context.WithTimeout(context.Background(), eventuallyTimeout)
+		defer cancel()
+		result := make(chan error, 1)
+		go func() { result <- inventory.WaitLoaded(ctx) }()
+
+		cancelRun()
+
+		Eventually(result, eventuallyTimeout).Should(Receive(MatchError(errStopped)))
+		Expect(inventory.WaitLoaded(ctx)).To(MatchError(errStopped))
+	})
+
+	It("remembers loading after a later source failure and shutdown", func() {
+		inventory, err := New(newFakeClient(), withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		cancelRun := start(inventory)
+		ctx, cancel := context.WithTimeout(context.Background(), eventuallyTimeout)
+		defer cancel()
+		Expect(inventory.WaitLoaded(ctx)).To(Succeed())
+		inventory.mu.Lock()
+		inventory.fail(apierrors.NewServiceUnavailable("disconnected"))
+		inventory.mu.Unlock()
+
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
+		Expect(inventory.WaitLoaded(ctx)).To(Succeed())
+		cancelRun()
+		Eventually(inventoryHealth(inventory), eventuallyTimeout).Should(MatchError(errStopped))
+		Expect(inventory.WaitLoaded(ctx)).To(Succeed())
+	})
+
+	It("marks a complete list loaded even when a definition cannot be decoded", func() {
+		broken := unstructuredKarta(newKarta("broken", jobGVK))
+		broken.Object["spec"] = "not-an-object"
+		inventory, err := New(newFakeClient(broken), withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		start(inventory)
+		ctx, cancel := context.WithTimeout(context.Background(), eventuallyTimeout)
+		defer cancel()
+
+		Expect(inventory.WaitLoaded(ctx)).To(Succeed())
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
+	})
+})
+
+// truncatedDecoder optionally sends a bookmark, then ends with a decode error.
+// StreamWatcher closes without an Error event for io.ErrUnexpectedEOF.
+type truncatedDecoder struct {
+	bookmark bool
+	broken   chan struct{}
+	once     sync.Once
+}
+
+func (d *truncatedDecoder) Decode() (watch.EventType, runtime.Object, error) {
+	if d.bookmark {
+		d.bookmark = false
+		bookmark := &unstructured.Unstructured{}
+		bookmark.SetResourceVersion("2")
+		return watch.Bookmark, bookmark, nil
+	}
+	<-d.broken
+	return "", nil, io.ErrUnexpectedEOF
+}
+
+func (d *truncatedDecoder) Close() { d.once.Do(func() { close(d.broken) }) }
+
+type streamErrorReporter struct{}
+
+func (streamErrorReporter) AsObject(error) runtime.Object {
+	return &metav1.Status{Status: "Failure", Code: 500}
+}
+
+var _ = Describe("Inventory watch recovery", func() {
+	It("does not let a stopped old watch closing invalidate a fresh list", func() {
+		client := newFakeClient()
+		server := watch.NewRaceFreeFake()
+		client.PrependWatchReactor("kartas", func(ktesting.Action) (bool, watch.Interface, error) {
+			return true, server, nil
+		})
+		inventory, err := New(client, withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		store := reflectorStore{inventory: inventory}
+		Expect(store.Replace(nil, "1")).To(Succeed())
+		w, err := inventory.listWatch(client.Resource(kartasGVR)).WatchFuncWithContext(context.Background(), metav1.ListOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(w.Stop)
+
+		w.Stop()
+		Expect(store.Replace([]any{unstructuredKarta(newKarta("fresh", jobGVK))}, "2")).To(Succeed())
+		server.Stop()
+
+		Eventually(w.ResultChan(), eventuallyTimeout).Should(BeClosed())
+		Expect(inventoryHealth(inventory)()).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("fresh"))
+	})
+
+	It("preserves the permission error when the failed watch subsequently closes", func() {
+		client := newFakeClient()
+		server := watch.NewRaceFreeFake()
+		client.PrependWatchReactor("kartas", func(ktesting.Action) (bool, watch.Interface, error) {
+			return true, server, nil
+		})
+		inventory, err := New(client, withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		store := reflectorStore{inventory: inventory}
+		Expect(store.Replace(nil, "1")).To(Succeed())
+		w, err := inventory.listWatch(client.Resource(kartasGVR)).WatchFuncWithContext(context.Background(), metav1.ListOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(w.Stop)
+		denied := apierrors.NewForbidden(kartasGR, "", errors.New("permission revoked"))
+		server.Error(&denied.ErrStatus)
+		Eventually(w.ResultChan(), eventuallyTimeout).Should(Receive())
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrPermissionDenied))
+
+		server.Stop()
+
+		Eventually(w.ResultChan(), eventuallyTimeout).Should(BeClosed())
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrPermissionDenied))
+		_, err = inventory.Lookup(jobGVK)
+		Expect(err).To(MatchError(ErrPermissionDenied))
+		Expect(err).To(MatchError(ContainSubstring("permission revoked")))
+	})
+
+	DescribeTable("fails closed when a watch ends without an Error event", func(truncated bool) {
+		client := newFakeClient()
+		var server watch.Interface = watch.NewRaceFreeFake()
+		end := server.Stop
+		if truncated {
+			decoder := &truncatedDecoder{broken: make(chan struct{})}
+			server = watch.NewStreamWatcher(decoder, streamErrorReporter{})
+			end = decoder.Close
+		}
+		DeferCleanup(end)
+		client.PrependWatchReactor("kartas", func(ktesting.Action) (bool, watch.Interface, error) {
+			return true, server, nil
+		})
+		inventory, err := New(client, withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		store := reflectorStore{inventory: inventory}
+		Expect(store.Replace(nil, "1")).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+		w, err := inventory.listWatch(client.Resource(kartasGVR)).WatchFuncWithContext(context.Background(), metav1.ListOptions{ResourceVersion: "1"})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(w.Stop)
+
+		end()
+
+		Eventually(w.ResultChan(), eventuallyTimeout).Should(BeClosed())
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
+		_, err = inventory.Lookup(jobGVK)
+		Expect(err).To(MatchError(ErrUnavailable))
+	},
+		Entry("unexpected EOF during decoding", true),
+		Entry("clean closure of an idle watch", false),
+	)
+
+	It("requires a full relist after a truncated stream before serving catalog absence again", func() {
+		client := newFakeClient()
+		decoder := &truncatedDecoder{bookmark: true, broken: make(chan struct{})}
+		var lists atomic.Int32
+		arrived := unstructuredKarta(newKarta("arrived-while-disconnected", jobGVK))
+		relisting, release := make(chan struct{}), make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		client.PrependReactor("list", "kartas", func(ktesting.Action) (bool, runtime.Object, error) {
+			if lists.Add(1) == 1 {
+				return true, &unstructured.UnstructuredList{}, nil
+			}
+			close(relisting)
+			<-release
+			return true, &unstructured.UnstructuredList{Items: []unstructured.Unstructured{*arrived}}, nil
+		})
+		var watches atomic.Int32
+		client.PrependWatchReactor("kartas", func(ktesting.Action) (bool, watch.Interface, error) {
+			if watches.Add(1) == 1 {
+				return true, watch.NewStreamWatcher(decoder, streamErrorReporter{}), nil
+			}
+			return true, watch.NewRaceFreeFake(), nil
+		})
+		inventory, err := New(client, withCatalog)
+		Expect(err).NotTo(HaveOccurred())
+		start(inventory)
+		DeferCleanup(unblock)
+		DeferCleanup(decoder.Close)
+		Eventually(inventoryHealth(inventory), eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		Eventually(watches.Load, eventuallyTimeout).Should(Equal(int32(1)))
+		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+
+		decoder.Close()
+
+		Eventually(relisting, eventuallyTimeout).Should(BeClosed())
+		Expect(inventoryHealth(inventory)()).To(MatchError(ErrUnavailable))
+		_, err = inventory.Lookup(jobGVK)
+		Expect(err).To(MatchError(ErrUnavailable))
+		Expect(watches.Load()).To(Equal(int32(1)), "a resumed watch cannot prove the current absence of cluster definitions")
+		unblock()
+		Eventually(func(g Gomega) {
+			sel, err := inventory.Lookup(jobGVK)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(sel.Origin.Name).To(Equal("arrived-while-disconnected"))
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+	})
+})
+
+var _ = Describe("Options", func() {
+	DescribeTable("rejects options that cannot be applied",
+		func(options Options, wantProblems ...string) {
+			_, err := New(newFakeClient(), options)
+
+			Expect(err).To(MatchError(ErrInvalidOptions))
+			for _, problem := range wantProblems {
+				Expect(err.Error()).To(ContainSubstring(problem))
+			}
+		},
+		Entry("an unknown catalog include name",
+			Options{Catalog: SourceOptions{Enabled: true, Include: []string{"batch-job-v2"}}},
+			`catalog.include: unknown definition "batch-job-v2"`),
+		Entry("an unknown catalog exclude name, even with the catalog disabled",
+			Options{Catalog: SourceOptions{Exclude: []string{"core-pod"}}},
+			`catalog.exclude: unknown definition "core-pod"`),
+		Entry("an empty name",
+			Options{Cluster: SourceOptions{Enabled: true, Include: []string{""}}},
+			"cluster.include: empty definition name"),
+		Entry("a duplicate name",
+			Options{Cluster: SourceOptions{Enabled: true, Exclude: []string{"a", "a"}}},
+			`cluster.exclude: duplicate definition name "a"`),
+		Entry("a malformed selector",
+			Options{Cluster: SourceOptions{Enabled: true, LabelSelector: &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "team", Operator: "Contains", Values: []string{"x"}}},
+			}}},
+			"cluster.labelSelector"),
+		Entry("a catalog label selector",
+			Options{Catalog: SourceOptions{Enabled: true, LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "x"}}}},
+			"catalog.labelSelector: catalog definitions carry no labels"),
+		Entry("every problem at once",
+			Options{
+				Catalog: SourceOptions{Include: []string{"nope"}},
+				Cluster: SourceOptions{Enabled: true, Exclude: []string{""}},
+			},
+			`catalog.include: unknown definition "nope"`, "cluster.exclude: empty definition name"),
+	)
+
+	It("lists the known catalog names when a name is unknown", func() {
+		_, err := New(newFakeClient(), Options{Catalog: SourceOptions{Include: []string{"nope"}}})
+
+		Expect(err).To(MatchError(ContainSubstring("known: ")))
+		Expect(err.Error()).To(ContainSubstring("batch-job-v1"))
+		Expect(err.Error()).To(ContainSubstring("core-pod-v1"))
+	})
+
+	DescribeTable("accepts",
+		func(options Options) {
+			_, err := New(newFakeClient(), options)
+			Expect(err).NotTo(HaveOccurred())
+		},
+		Entry("the defaults", DefaultOptions()),
+		Entry("both sources disabled", Options{}),
+		Entry("a cluster include name no definition has yet",
+			Options{Cluster: SourceOptions{Enabled: true, Include: []string{"not-created-yet"}}}),
+		Entry("the same name in include and exclude, where exclude wins",
+			Options{Cluster: SourceOptions{Enabled: true, Include: []string{"a"}, Exclude: []string{"a"}}}),
+		Entry("an empty catalog label selector",
+			Options{Catalog: SourceOptions{Enabled: true, LabelSelector: &metav1.LabelSelector{}}}),
+	)
+
+	It("reads the cluster by default and leaves the catalog off", func() {
+		Expect(DefaultOptions()).To(Equal(Options{Cluster: SourceOptions{Enabled: true}}))
+	})
+
+	Context("compiled cluster selector", func() {
+		definitions := []*v1alpha1.Karta{
+			newKarta("a", deploymentGVK, withLabels(map[string]string{"team": "x"})),
+			newKarta("b", jobGVK),
+		}
+
+		DescribeTable("selects",
+			func(selector *metav1.LabelSelector, include []string, want []string) {
+				inventory := loadedInventory(Options{Cluster: SourceOptions{Enabled: true, Include: include, LabelSelector: selector}}, definitions...)
+				for _, definition := range definitions {
+					sel, err := inventory.Lookup(schema.GroupVersionKind{Group: definition.Spec.StructureDefinition.RootComponent.Kind.Group, Version: definition.Spec.StructureDefinition.RootComponent.Kind.Version, Kind: definition.Spec.StructureDefinition.RootComponent.Kind.Kind})
+					Expect(err).NotTo(HaveOccurred())
+					if slices.Contains(want, definition.Name) {
+						Expect(sel.Origin.Name).To(Equal(definition.Name))
+					} else {
+						Expect(sel).To(Equal(Selection{}))
+					}
+				}
+			},
+			Entry("everything for a nil selector, not nothing", nil, nil, []string{"a", "b"}),
+			Entry("everything for an empty selector", &metav1.LabelSelector{}, nil, []string{"a", "b"}),
+			Entry("only the included names when there is no selector", nil, []string{"b"}, []string{"b"}),
+			Entry("only the included names when the selector is empty", &metav1.LabelSelector{}, []string{"b"}, []string{"b"}),
+			Entry("by matchLabels", &metav1.LabelSelector{MatchLabels: map[string]string{"team": "x"}}, nil, []string{"a"}),
+			Entry("by matchExpressions, where NotIn also matches a missing label",
+				&metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+					{Key: "team", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"x"}},
+				}},
+				nil, []string{"b"}),
+		)
+	})
+})
+
+// inventoryHealth probes an absent kind so a selected definition's validation
+// error cannot hide the global source state.
+func inventoryHealth(inventory *Inventory) func() error {
+	return func() error {
+		_, err := inventory.Lookup(schema.GroupVersionKind{Group: "health.example", Version: "v1", Kind: "Absent"})
+		return err
+	}
+}
+
+// loadedInventory applies objects through the same store used by the reflector.
+func loadedInventory(options Options, definitions ...*v1alpha1.Karta) *Inventory {
+	GinkgoHelper()
+	inventory, err := New(newFakeClient(), options)
+	Expect(err).NotTo(HaveOccurred())
+	if options.Cluster.Enabled {
+		objects := make([]any, 0, len(definitions))
+		for _, definition := range definitions {
+			objects = append(objects, unstructuredKarta(definition))
+		}
+		Expect((reflectorStore{inventory: inventory}).Replace(objects, "1")).To(Succeed())
+	}
+	return inventory
+}
+
+var _ = Describe("Inventory selection", func() {
+	DescribeTable("combines cluster name and label filters",
+		func(source SourceOptions, want []string) {
+			definitions := []*v1alpha1.Karta{
+				newKarta("a", deploymentGVK, withLabels(map[string]string{"team": "x"})),
+				newKarta("b", jobGVK),
+				newKarta("c", podGVK, withLabels(map[string]string{"team": "y"})),
+			}
+			inventory := loadedInventory(Options{Cluster: source}, definitions...)
+			for n, gvk := range []schema.GroupVersionKind{deploymentGVK, jobGVK, podGVK} {
+				sel, err := inventory.Lookup(gvk)
+				Expect(err).NotTo(HaveOccurred())
+				if slices.Contains(want, definitions[n].Name) {
+					Expect(sel.Origin.Name).To(Equal(definitions[n].Name))
+				} else {
+					Expect(sel).To(Equal(Selection{}))
+				}
+			}
+		},
+		Entry("all names", SourceOptions{Enabled: true}, []string{"a", "b", "c"}),
+		Entry("include", SourceOptions{Enabled: true, Include: []string{"a"}}, []string{"a"}),
+		Entry("exclude wins over include", SourceOptions{Enabled: true, Include: []string{"a", "b"}, Exclude: []string{"b"}}, []string{"a"}),
+		Entry("exclude alone", SourceOptions{Enabled: true, Exclude: []string{"b"}}, []string{"a", "c"}),
+		Entry("disabled", SourceOptions{Include: []string{"a"}}, []string{}),
+		Entry("include and selector intersect", SourceOptions{Enabled: true, Include: []string{"a", "c"}, LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "y"}}}, []string{"c"}),
+		Entry("included name fails selector", SourceOptions{Enabled: true, Include: []string{"b"}, LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "y"}}}, []string{}),
+	)
+
+	DescribeTable("elects the same cluster winner for every arrival order",
+		func(definitions []*v1alpha1.Karta, winner string) {
+			for seed := int64(1); seed <= 10; seed++ {
+				shuffled := slices.Clone(definitions)
+				rand.New(rand.NewSource(seed)).Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+				inventory := loadedInventory(DefaultOptions(), shuffled...)
+				Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal(winner))
+			}
+		},
+		Entry("oldest before name", []*v1alpha1.Karta{newKarta("a-newer", jobGVK, createdAt(epoch.Add(time.Hour))), newKarta("b-older", jobGVK, createdAt(epoch))}, "b-older"),
+		Entry("equal timestamps use name", []*v1alpha1.Karta{newKarta("b", jobGVK, createdAt(epoch)), newKarta("a", jobGVK, createdAt(epoch))}, "a"),
+		Entry("missing timestamp is oldest", []*v1alpha1.Karta{newKarta("a", jobGVK, createdAt(epoch)), newKarta("z-unstamped", jobGVK)}, "z-unstamped"),
+	)
+
+	It("selects the catalog's highest version priority independent of requested version", func() {
+		inventory := loadedInventory(Options{Catalog: SourceOptions{Enabled: true}})
+		for _, version := range []string{"v1alpha1", "v1beta1", "v9"} {
+			sel, err := inventory.Lookup(dynamoAlphaGVK.GroupKind().WithVersion(version))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sel.GVK).To(Equal(dynamoBetaGVK))
+			Expect(sel.Origin.Name).To(Equal("nvidia-com-dynamographdeployment-v1beta1"))
+		}
+	})
+
+	It("filters the catalog and lets an excluded cluster definition reveal it", func() {
+		inventory := loadedInventory(Options{Catalog: SourceOptions{Enabled: true, Exclude: []string{"core-pod-v1"}}, Cluster: SourceOptions{Enabled: true, Exclude: []string{"cluster-job"}}}, newKarta("cluster-job", jobGVK))
+		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+		sel, err := inventory.Lookup(podGVK)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel).To(Equal(Selection{}))
+	})
+
+	It("shadows the catalog across versions without changing the selected version", func() {
+		inventory := loadedInventory(withCatalog, newKarta("alpha", dynamoAlphaGVK, fromCluster("uid", "7")))
+		sel, err := inventory.Lookup(dynamoBetaGVK)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel.GVK).To(Equal(dynamoAlphaGVK))
+		Expect(sel.Origin).To(Equal(Origin{Source: SourceCluster, Name: "alpha", UID: "uid", ResourceVersion: "7"}))
+	})
+
+	DescribeTable("ignores definitions without a complete root kind",
+		func(definition *v1alpha1.Karta) {
+			inventory := loadedInventory(withCatalog, definition)
+			Expect(inventoryHealth(inventory)()).To(Succeed())
+			Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
+		},
+		Entry("nil kind", newRootlessKarta("rootless")),
+		Entry("empty version", newKarta("versionless", schema.GroupVersionKind{Group: "batch", Kind: "Job"})),
+		Entry("empty kind", newKarta("kindless", schema.GroupVersionKind{Group: "batch", Version: "v1"})),
+	)
+
+	It("returns caller-owned deep copies for cluster and catalog definitions", func() {
+		inventory := loadedInventory(withCatalog, newKarta("cluster-job", jobGVK, withLabels(map[string]string{"team": "x"})))
+		for _, gvk := range []schema.GroupVersionKind{jobGVK, deploymentGVK} {
+			first, err := inventory.Lookup(gvk)
+			Expect(err).NotTo(HaveOccurred())
+			original := first.Definition.DeepCopy()
+			first.Definition.Name = "mutated"
+			if first.Definition.Labels != nil {
+				first.Definition.Labels["team"] = "mutated"
+			}
+			first.Definition.Spec.StructureDefinition.RootComponent.Kind.Kind = "Mutated"
+			second, err := inventory.Lookup(gvk)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(second.Definition).To(Equal(original))
+		}
+	})
+
+	It("owns decoded objects after store ingestion", func() {
+		inventory := loadedInventory(DefaultOptions())
+		obj := unstructuredKarta(newKarta("owned", jobGVK, withLabels(map[string]string{"team": "x"})))
+		Expect((reflectorStore{inventory: inventory}).Add(obj)).To(Succeed())
+		obj.Object["metadata"].(map[string]any)["labels"].(map[string]any)["team"] = "changed"
+		obj.Object["spec"].(map[string]any)["structureDefinition"].(map[string]any)["rootComponent"].(map[string]any)["name"] = "changed"
+		sel, err := inventory.Lookup(jobGVK)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel.Definition.Labels).To(Equal(map[string]string{"team": "x"}))
+		Expect(sel.Definition.Spec.StructureDefinition.RootComponent.Name).To(Equal("root"))
+	})
+
+	It("keeps an invalid oldest winner until deletion elects the valid runner-up", func() {
+		bad := newKarta("older-invalid", jobGVK, createdAt(epoch), invalid)
+		inventory := loadedInventory(withCatalog, bad, newKarta("newer-valid", jobGVK, createdAt(epoch.Add(time.Hour))))
+		var readers sync.WaitGroup
+		for range 10 {
+			readers.Go(func() {
+				defer GinkgoRecover()
+				for range 10 {
+					sel, err := inventory.Lookup(jobGVK)
+					Expect(err).To(MatchError(ErrInvalidDefinition))
+					Expect(err.Error()).To(ContainSubstring("older-invalid"))
+					Expect(sel).To(Equal(Selection{}))
+				}
+			})
+		}
+		readers.Wait()
+		Expect(inventoryHealth(inventory)()).To(Succeed())
+		Expect((reflectorStore{inventory: inventory}).Delete(unstructuredKarta(bad))).To(Succeed())
+		Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("newer-valid"))
+	})
+
+	It("serves a valid winner until deletion elects its retained invalid runner-up", func() {
+		winner := newKarta("older-valid", jobGVK, createdAt(epoch))
+		inventory := loadedInventory(withCatalog, winner,
+			newKarta("newer-invalid", jobGVK, createdAt(epoch.Add(time.Hour)), invalid))
+
+		Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("older-valid"))
+		Expect((reflectorStore{inventory: inventory}).Delete(unstructuredKarta(winner))).To(Succeed())
+
+		sel, err := inventory.Lookup(jobGVK)
+		Expect(err).To(MatchError(ErrInvalidDefinition))
+		Expect(err.Error()).To(ContainSubstring("newer-invalid"))
+		Expect(sel).To(Equal(Selection{}))
+		Expect(inventoryHealth(inventory)()).To(Succeed())
+	})
+
+	It("accepts a core group and leaves an omitted status definition unchanged", func() {
+		inventory := loadedInventory(DefaultOptions(), newKarta("pod", podGVK))
+		sel, err := inventory.Lookup(podGVK)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel.GVK).To(Equal(podGVK))
+		Expect(sel.Definition.Spec.StructureDefinition.RootComponent.StatusDefinition).To(BeNil())
+	})
+})
+
+func TestKartaDefinitionInventory(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Karta Definition Inventory Suite")
+}
+
+var _ = Describe("Inventory generation", func() {
+
+	It("returns one coherent definition and origin while full lists replace the cluster", func() {
+		inventory := loadedInventory(DefaultOptions())
+		store := reflectorStore{inventory: inventory}
+		generations := make([][]any, 2)
+		for n := range generations {
+			generations[n] = []any{unstructuredKarta(newKarta(fmt.Sprintf("generation-%d", n), jobGVK.GroupKind().WithVersion(fmt.Sprintf("v%d", n+1)), fromCluster(fmt.Sprintf("uid-%d", n), fmt.Sprint(n))))}
+		}
+		Expect(store.Replace(generations[0], "0")).To(Succeed())
+		var readers sync.WaitGroup
+		begin := make(chan struct{})
+		for range 4 {
+			readers.Go(func() {
+				defer GinkgoRecover()
+				<-begin
+				for range 100 {
+					sel, err := inventory.Lookup(jobGVK)
+					Expect(err).NotTo(HaveOccurred())
+					generation := sel.Origin.ResourceVersion
+					Expect(sel.Origin.Name).To(Equal("generation-" + generation))
+					Expect(sel.Origin.UID).To(Equal(types.UID("uid-" + generation)))
+					Expect(sel.Definition.Name).To(Equal(sel.Origin.Name))
+					Expect(sel.Definition.ResourceVersion).To(Equal(generation))
+					Expect(sel.Definition.UID).To(Equal(sel.Origin.UID))
+					expectedVersion := "v1"
+					if generation == "1" {
+						expectedVersion = "v2"
+					}
+					Expect(sel.GVK).To(Equal(jobGVK.GroupKind().WithVersion(expectedVersion)))
+					Expect(sel.Definition.Spec.StructureDefinition.RootComponent.Kind.Version).To(Equal(expectedVersion))
+				}
+			})
+		}
+		close(begin)
+		for n := range 100 {
+			Expect(store.Replace(generations[n%2], fmt.Sprint(n))).To(Succeed())
+		}
+		readers.Wait()
 	})
 })

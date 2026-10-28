@@ -298,13 +298,11 @@ var _ = Describe("Karta definition sources", func() {
 		}))
 	})
 
-	It("keeps an empty selector, which the inventory treats as no selector", func() {
+	It("preserves an empty selector in the inventory options", func() {
 		cfg, err := loadWithArgs("--config", writeConfig("kartaDefinitionSource:\n  cluster:\n    enabled: true\n    labelSelector: {}\n"))
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(cfg.KartaDefinitionSource.Options().Cluster.LabelSelector).To(Equal(&metav1.LabelSelector{}))
-		_, err = kartadefinitioninventory.NewSnapshot(cfg.KartaDefinitionSource.Options(), nil)
-		Expect(err).NotTo(HaveOccurred())
 	})
 
 	DescribeTable("rejects a mistyped key",

@@ -189,10 +189,10 @@ var _ = Describe("Karta definition inventory", func() {
 			}
 		}()
 
-		Eventually(inv.Ready, 2*eventuallyTimeout, eventuallyInterval).Should(MatchError(inventory.ErrUnavailable))
+		Eventually(inventoryHealth(inv), 2*eventuallyTimeout, eventuallyInterval).Should(MatchError(inventory.ErrUnavailable))
 		Expect(apiServer.Start()).To(Succeed())
 		running = true
-		Eventually(inv.Ready, 2*eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		Eventually(inventoryHealth(inv), 2*eventuallyTimeout, eventuallyInterval).Should(Succeed())
 		expectOrigin(inv, jobGVK, func(o inventory.Origin) bool { return o.Source == inventory.SourceCluster })
 	})
 
@@ -200,7 +200,7 @@ var _ = Describe("Karta definition inventory", func() {
 		func(config func() *rest.Config, want error) {
 			inv := start(clientFor(config()), withCatalog)
 
-			Eventually(inv.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(want))
+			Eventually(inventoryHealth(inv), eventuallyTimeout, eventuallyInterval).Should(MatchError(want))
 			_, err := inv.Lookup(jobGVK)
 			Expect(err).To(MatchError(want))
 		},
@@ -225,13 +225,13 @@ var _ = Describe("Karta definition inventory", func() {
 		client.refuse.Store(true)
 		(*client.latest.Load()).Stop()
 
-		Eventually(inv.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(inventory.ErrUnavailable))
+		Eventually(inventoryHealth(inv), eventuallyTimeout, eventuallyInterval).Should(MatchError(inventory.ErrUnavailable))
 		_, err := inv.Lookup(jobGVK)
 		Expect(err).To(MatchError(inventory.ErrUnavailable))
 		Expect(client.lists.Load()).To(BeZero())
 
 		client.refuse.Store(false)
-		Eventually(inv.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		Eventually(inventoryHealth(inv), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 		expectOrigin(inv, jobGVK, func(o inventory.Origin) bool { return o.Source == inventory.SourceCluster })
 	})
 
@@ -250,14 +250,14 @@ var _ = Describe("Karta definition inventory", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			Eventually(inv.Ready, eventuallyTimeout, eventuallyInterval).Should(MatchError(inventory.ErrUnavailable))
+			Eventually(inventoryHealth(inv), eventuallyTimeout, eventuallyInterval).Should(MatchError(inventory.ErrUnavailable))
 			_, err := inv.Lookup(jobGVK)
 			Expect(err).To(MatchError(inventory.ErrUnavailable))
 
 			_, err = envtest.InstallCRDs(adminConfig, envtest.CRDInstallOptions{Paths: crdPaths, ErrorIfPathMissing: true})
 			Expect(err).NotTo(HaveOccurred())
 			// The CRD came back empty, so recovery is an empty list replacing the old one.
-			Eventually(inv.Ready, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+			Eventually(inventoryHealth(inv), eventuallyTimeout, eventuallyInterval).Should(Succeed())
 			expectOrigin(inv, jobGVK, func(o inventory.Origin) bool {
 				return o == inventory.Origin{Source: inventory.SourceCatalog, Name: "batch-job-v1"}
 			})
@@ -267,3 +267,11 @@ var _ = Describe("Karta definition inventory", func() {
 		Entry("over LIST when the server refuses streaming", false, true, true, true),
 	)
 })
+
+// inventoryHealth probes an absent kind to isolate source failures from definition validation.
+func inventoryHealth(inv *inventory.Inventory) func() error {
+	return func() error {
+		_, err := inv.Lookup(schema.GroupVersionKind{Group: "health.example", Version: "v1", Kind: "Absent"})
+		return err
+	}
+}

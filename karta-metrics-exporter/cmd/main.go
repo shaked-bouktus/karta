@@ -85,9 +85,15 @@ func run() error {
 	defer stop()
 	inventoryDone := make(chan error, 1)
 	go func() { inventoryDone <- inventory.Run(ctx) }()
-	slog.Info("Karta metrics exporter scaffold started; metrics collection is not implemented",
-		"version", version.String(), "submitterExtraction", submitterextractor.IsEnabled(extractor),
-		"catalogDefinitions", options.Catalog.Enabled, "clusterDefinitions", options.Cluster.Enabled)
+	if err := inventory.WaitLoaded(ctx); err != nil && ctx.Err() == nil {
+		stop()
+		return fmt.Errorf("initial Karta definition load: %w", errors.Join(err, <-inventoryDone))
+	}
+	if ctx.Err() == nil {
+		slog.Info("Karta metrics exporter scaffold initialized; metrics collection is not implemented",
+			"version", version.String(), "submitterExtraction", submitterextractor.IsEnabled(extractor),
+			"catalogDefinitions", options.Catalog.Enabled, "clusterDefinitions", options.Cluster.Enabled)
+	}
 	select {
 	case <-ctx.Done():
 		stop() // A second signal now ends the process.

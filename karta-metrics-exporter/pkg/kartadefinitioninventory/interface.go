@@ -4,6 +4,9 @@
 package kartadefinitioninventory
 
 import (
+	"errors"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -33,3 +36,32 @@ const (
 	SourceCatalog Source = "catalog"
 	SourceCluster Source = "cluster"
 )
+
+var (
+	ErrInvalidOptions    = errors.New("invalid definition source options")
+	ErrNotReady          = errors.New("definition sources not ready")
+	ErrUnavailable       = errors.New("definition source unavailable")
+	ErrPermissionDenied  = errors.New("definition source permission denied")
+	ErrInvalidDefinition = errors.New("invalid Karta definition")
+)
+
+// Options selects definitions from the built-in catalog and from the cluster.
+type Options struct {
+	Catalog SourceOptions
+	Cluster SourceOptions
+}
+
+// SourceOptions selects a definition when its name is in Include and its labels
+// match LabelSelector; an empty list or selector allows all, and Exclude wins.
+type SourceOptions struct {
+	Enabled bool
+	Include []string
+	Exclude []string
+	// LabelSelector applies to cluster definitions only.
+	LabelSelector *metav1.LabelSelector
+}
+
+// DefaultOptions reads the cluster's Karta definitions and leaves the catalog off.
+func DefaultOptions() Options {
+	return Options{Cluster: SourceOptions{Enabled: true}}
+}
