@@ -12,14 +12,14 @@ replace or delete cluster entries. A complete list replaces the cluster map
 atomically. One `sync.RWMutex` protects cluster data and source health.
 
 `Lookup(gvk)` checks health and scans cluster definitions under a read lock.
-It ignores the requested version. Include, exclude and label filters apply
-before election. The oldest matching cluster definition wins; name breaks ties.
+It ignores the requested version. Include and exclude filters apply before
+election. The oldest matching cluster definition wins; name breaks ties.
 When none matches, the catalog winner applies. Catalog selection prefers
 Kubernetes version priority, then name. Missing root version or kind prevents
 selection. Other validation errors are returned only if that definition wins.
 
-Every cluster candidate stays in the map so deletion, label changes and root-kind
-changes can select another winner. Validation runs once per decoded entry,
+Every cluster candidate stays in the map so deletion and root-kind changes can
+select another winner. Validation runs once per decoded entry,
 outside the lock, including entries that do not win. The stored result avoids
 validation work during lookup. Entries are replaced whole. The winning definition
 is copied after releasing the lock, so callers own their returned data. `Origin`

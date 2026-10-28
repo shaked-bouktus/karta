@@ -788,21 +788,6 @@ var _ = Describe("Inventory store updates", func() {
 		Expect(lookupOrigin(inventory, deploymentGVK).Name).To(Equal("moving"))
 	})
 
-	It("rechecks label filtering when a definition enters or leaves the selection", func() {
-		options := withCatalog
-		options.Cluster.LabelSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"team": "x"}}
-		inventory, err := New(newFakeClient(), options)
-		Expect(err).NotTo(HaveOccurred())
-		store := reflectorStore{inventory: inventory}
-		Expect(store.Replace([]any{unstructuredKarta(newKarta("selected", jobGVK))}, "1")).To(Succeed())
-		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
-
-		Expect(store.Update(unstructuredKarta(newKarta("selected", jobGVK, withLabels(map[string]string{"team": "x"}))))).To(Succeed())
-		Expect(lookupOrigin(inventory, jobGVK).Name).To(Equal("selected"))
-		Expect(store.Update(unstructuredKarta(newKarta("selected", jobGVK)))).To(Succeed())
-		Expect(lookupOrigin(inventory, jobGVK)).To(Equal(catalogJobOrigin))
-	})
-
 	It("recovers from a decode error when the same definition is repaired", func() {
 		inventory, err := New(newFakeClient(), withCatalog)
 		Expect(err).NotTo(HaveOccurred())
@@ -1126,14 +1111,6 @@ var _ = Describe("Options", func() {
 		Entry("a duplicate name",
 			Options{Cluster: SourceOptions{Enabled: true, Exclude: []string{"a", "a"}}},
 			`cluster.exclude: duplicate definition name "a"`),
-		Entry("a malformed selector",
-			Options{Cluster: SourceOptions{Enabled: true, LabelSelector: &metav1.LabelSelector{
-				MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "team", Operator: "Contains", Values: []string{"x"}}},
-			}}},
-			"cluster.labelSelector"),
-		Entry("a catalog label selector",
-			Options{Catalog: SourceOptions{Enabled: true, LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "x"}}}},
-			"catalog.labelSelector: catalog definitions carry no labels"),
 		Entry("every problem at once",
 			Options{
 				Catalog: SourceOptions{Include: []string{"nope"}},
@@ -1161,44 +1138,10 @@ var _ = Describe("Options", func() {
 			Options{Cluster: SourceOptions{Enabled: true, Include: []string{"not-created-yet"}}}),
 		Entry("the same name in include and exclude, where exclude wins",
 			Options{Cluster: SourceOptions{Enabled: true, Include: []string{"a"}, Exclude: []string{"a"}}}),
-		Entry("an empty catalog label selector",
-			Options{Catalog: SourceOptions{Enabled: true, LabelSelector: &metav1.LabelSelector{}}}),
 	)
 
 	It("reads the cluster by default and leaves the catalog off", func() {
 		Expect(DefaultOptions()).To(Equal(Options{Cluster: SourceOptions{Enabled: true}}))
-	})
-
-	Context("compiled cluster selector", func() {
-		definitions := []*v1alpha1.Karta{
-			newKarta("a", deploymentGVK, withLabels(map[string]string{"team": "x"})),
-			newKarta("b", jobGVK),
-		}
-
-		DescribeTable("selects",
-			func(selector *metav1.LabelSelector, include []string, want []string) {
-				inventory := loadedInventory(Options{Cluster: SourceOptions{Enabled: true, Include: include, LabelSelector: selector}}, definitions...)
-				for _, definition := range definitions {
-					sel, err := inventory.Lookup(schema.GroupVersionKind{Group: definition.Spec.StructureDefinition.RootComponent.Kind.Group, Version: definition.Spec.StructureDefinition.RootComponent.Kind.Version, Kind: definition.Spec.StructureDefinition.RootComponent.Kind.Kind})
-					Expect(err).NotTo(HaveOccurred())
-					if slices.Contains(want, definition.Name) {
-						Expect(sel.Origin.Name).To(Equal(definition.Name))
-					} else {
-						Expect(sel).To(Equal(Selection{}))
-					}
-				}
-			},
-			Entry("everything for a nil selector, not nothing", nil, nil, []string{"a", "b"}),
-			Entry("everything for an empty selector", &metav1.LabelSelector{}, nil, []string{"a", "b"}),
-			Entry("only the included names when there is no selector", nil, []string{"b"}, []string{"b"}),
-			Entry("only the included names when the selector is empty", &metav1.LabelSelector{}, []string{"b"}, []string{"b"}),
-			Entry("by matchLabels", &metav1.LabelSelector{MatchLabels: map[string]string{"team": "x"}}, nil, []string{"a"}),
-			Entry("by matchExpressions, where NotIn also matches a missing label",
-				&metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
-					{Key: "team", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"x"}},
-				}},
-				nil, []string{"b"}),
-		)
 	})
 })
 
@@ -1227,12 +1170,12 @@ func loadedInventory(options Options, definitions ...*v1alpha1.Karta) *Inventory
 }
 
 var _ = Describe("Inventory selection", func() {
-	DescribeTable("combines cluster name and label filters",
+	DescribeTable("applies the cluster include and exclude names",
 		func(source SourceOptions, want []string) {
 			definitions := []*v1alpha1.Karta{
-				newKarta("a", deploymentGVK, withLabels(map[string]string{"team": "x"})),
+				newKarta("a", deploymentGVK),
 				newKarta("b", jobGVK),
-				newKarta("c", podGVK, withLabels(map[string]string{"team": "y"})),
+				newKarta("c", podGVK),
 			}
 			inventory := loadedInventory(Options{Cluster: source}, definitions...)
 			for n, gvk := range []schema.GroupVersionKind{deploymentGVK, jobGVK, podGVK} {
@@ -1250,8 +1193,6 @@ var _ = Describe("Inventory selection", func() {
 		Entry("exclude wins over include", SourceOptions{Enabled: true, Include: []string{"a", "b"}, Exclude: []string{"b"}}, []string{"a"}),
 		Entry("exclude alone", SourceOptions{Enabled: true, Exclude: []string{"b"}}, []string{"a", "c"}),
 		Entry("disabled", SourceOptions{Include: []string{"a"}}, []string{}),
-		Entry("include and selector intersect", SourceOptions{Enabled: true, Include: []string{"a", "c"}, LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "y"}}}, []string{"c"}),
-		Entry("included name fails selector", SourceOptions{Enabled: true, Include: []string{"b"}, LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "y"}}}, []string{}),
 	)
 
 	DescribeTable("elects the same cluster winner for every arrival order",

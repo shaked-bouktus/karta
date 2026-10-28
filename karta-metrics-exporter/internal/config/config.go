@@ -17,7 +17,6 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/kartadefinitioninventory"
 	"github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/submitterextractor"
@@ -60,30 +59,17 @@ type AttributionLimits struct {
 	InterruptCheckFrequency uint   `yaml:"interruptCheckFrequency" json:"interruptCheckFrequency"`
 }
 
-// KartaDefinitionSourceConfig is read from the file only: its lists and
-// selectors do not fit a flag or an environment variable.
+// KartaDefinitionSourceConfig is read from the file only: its lists do not
+// fit a flag or an environment variable.
 type KartaDefinitionSourceConfig struct {
 	Catalog DefinitionSourceConfig `yaml:"catalog" json:"catalog"`
 	Cluster DefinitionSourceConfig `yaml:"cluster" json:"cluster"`
 }
 
 type DefinitionSourceConfig struct {
-	Enabled       bool           `yaml:"enabled" json:"enabled"`
-	Include       []string       `yaml:"include" json:"include"`
-	Exclude       []string       `yaml:"exclude" json:"exclude"`
-	LabelSelector *LabelSelector `yaml:"labelSelector" json:"labelSelector"`
-}
-
-// LabelSelector mirrors metav1.LabelSelector, whose fields carry no YAML tags.
-type LabelSelector struct {
-	MatchLabels      map[string]string          `yaml:"matchLabels" json:"matchLabels"`
-	MatchExpressions []LabelSelectorRequirement `yaml:"matchExpressions" json:"matchExpressions"`
-}
-
-type LabelSelectorRequirement struct {
-	Key      string   `yaml:"key" json:"key"`
-	Operator string   `yaml:"operator" json:"operator"`
-	Values   []string `yaml:"values" json:"values"`
+	Enabled bool     `yaml:"enabled" json:"enabled"`
+	Include []string `yaml:"include" json:"include"`
+	Exclude []string `yaml:"exclude" json:"exclude"`
 }
 
 var defaultAttributionLimits = AttributionLimits{
@@ -237,16 +223,7 @@ func (l *Loader) value(s setting) string {
 // Options converts the file settings; the inventory validates them.
 func (c KartaDefinitionSourceConfig) Options() kartadefinitioninventory.Options {
 	convert := func(s DefinitionSourceConfig) kartadefinitioninventory.SourceOptions {
-		o := kartadefinitioninventory.SourceOptions{Enabled: s.Enabled, Include: s.Include, Exclude: s.Exclude}
-		if s.LabelSelector != nil {
-			o.LabelSelector = &metav1.LabelSelector{MatchLabels: s.LabelSelector.MatchLabels}
-			for _, r := range s.LabelSelector.MatchExpressions {
-				o.LabelSelector.MatchExpressions = append(o.LabelSelector.MatchExpressions, metav1.LabelSelectorRequirement{
-					Key: r.Key, Operator: metav1.LabelSelectorOperator(r.Operator), Values: r.Values,
-				})
-			}
-		}
-		return o
+		return kartadefinitioninventory.SourceOptions{Enabled: s.Enabled, Include: s.Include, Exclude: s.Exclude}
 	}
 	return kartadefinitioninventory.Options{Catalog: convert(c.Catalog), Cluster: convert(c.Cluster)}
 }

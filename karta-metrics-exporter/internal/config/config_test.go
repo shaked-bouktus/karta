@@ -11,7 +11,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/kartadefinitioninventory"
 	"github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/submitterextractor"
@@ -259,7 +258,7 @@ var _ = Describe("Karta definition sources", func() {
 		Expect(cfg.KartaDefinitionSource.Cluster.Enabled).To(BeTrue())
 	})
 
-	It("reads the file as Helm renders it and converts the label selector", func() {
+	It("reads the file as Helm renders it", func() {
 		cfg, err := loadWithArgs("--config", writeConfig(`kartaDefinitionSource:
   catalog:
     enabled: true
@@ -271,46 +270,21 @@ var _ = Describe("Karta definition sources", func() {
     include:
     - platform-job
     exclude: []
-    labelSelector:
-      matchLabels:
-        example.com/owner: platform
-      matchExpressions:
-      - key: example.com/tier
-        operator: NotIn
-        values:
-        - experimental
 `))
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(cfg.KartaDefinitionSource.Options()).To(Equal(kartadefinitioninventory.Options{
 			Catalog: kartadefinitioninventory.SourceOptions{Enabled: true, Include: []string{}, Exclude: []string{"core-pod-v1"}},
-			Cluster: kartadefinitioninventory.SourceOptions{
-				Enabled: true,
-				Include: []string{"platform-job"},
-				Exclude: []string{},
-				LabelSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"example.com/owner": "platform"},
-					MatchExpressions: []metav1.LabelSelectorRequirement{
-						{Key: "example.com/tier", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"experimental"}},
-					},
-				},
-			},
+			Cluster: kartadefinitioninventory.SourceOptions{Enabled: true, Include: []string{"platform-job"}, Exclude: []string{}},
 		}))
 	})
 
-	It("preserves an empty selector in the inventory options", func() {
-		cfg, err := loadWithArgs("--config", writeConfig("kartaDefinitionSource:\n  cluster:\n    enabled: true\n    labelSelector: {}\n"))
-		Expect(err).NotTo(HaveOccurred())
-
-		Expect(cfg.KartaDefinitionSource.Options().Cluster.LabelSelector).To(Equal(&metav1.LabelSelector{}))
-	})
-
-	DescribeTable("rejects a mistyped key",
+	DescribeTable("rejects an unknown key",
 		func(content string) {
 			_, err := loadWithArgs("--config", writeConfig(content))
 			Expect(err).To(MatchError(ContainSubstring("not found")))
 		},
-		Entry("in a source", "kartaDefinitionSource:\n  cluster:\n    exlude: [a]\n"),
-		Entry("in a selector, such as the JSON-only spelling", "kartaDefinitionSource:\n  cluster:\n    labelSelector:\n      matchlabels: {a: b}\n"),
+		Entry("a mistyped one in a source", "kartaDefinitionSource:\n  cluster:\n    exlude: [a]\n"),
+		Entry("labelSelector, which the sources no longer take", "kartaDefinitionSource:\n  cluster:\n    labelSelector: {}\n"),
 	)
 })

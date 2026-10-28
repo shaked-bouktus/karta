@@ -6,7 +6,6 @@ package kartadefinitioninventory
 import (
 	"errors"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -51,14 +50,12 @@ type Options struct {
 	Cluster SourceOptions
 }
 
-// SourceOptions selects a definition when its name is in Include and its labels
-// match LabelSelector; an empty list or selector allows all, and Exclude wins.
+// SourceOptions selects a definition when its name is in Include; an empty
+// list allows all, and Exclude wins.
 type SourceOptions struct {
 	Enabled bool
 	Include []string
 	Exclude []string
-	// LabelSelector applies to cluster definitions only.
-	LabelSelector *metav1.LabelSelector
 }
 
 // DefaultOptions reads the cluster's Karta definitions and leaves the catalog off.

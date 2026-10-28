@@ -38,8 +38,7 @@ exporter:
       # evaluation. Must be greater than 0.
       interruptCheckFrequency: 100
   # Rendered verbatim into the exporter's config file (ConfigMap). Selects a
-  # definition when its name is in include and its labels match
-  # labelSelector. Empty selects all; exclude wins.
+  # definition when its name is in include. Empty selects all; exclude wins.
   kartaDefinitionSource:
     # Definitions built into the exporter, named as in docs/catalog, for
     # example batch-job-v1. Unknown names fail startup.
@@ -55,7 +54,6 @@ exporter:
       enabled: true
       include: []
       exclude: []
-      labelSelector: {}
 
 # Overrides for resource names. Rarely needed.
 fullnameOverride: ""

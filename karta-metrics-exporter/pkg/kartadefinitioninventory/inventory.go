@@ -16,7 +16,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -60,10 +59,9 @@ type definitionEntry struct {
 }
 
 type sourceFilter struct {
-	enabled  bool
-	include  sets.Set[string]
-	exclude  sets.Set[string]
-	selector labels.Selector
+	enabled bool
+	include sets.Set[string]
+	exclude sets.Set[string]
 }
 
 type reflectorStore struct {
@@ -441,8 +439,7 @@ func validatedEntry(k *v1alpha1.Karta) definitionEntry {
 }
 
 func (f sourceFilter) matches(k *v1alpha1.Karta) bool {
-	return f.enabled && (f.include.Len() == 0 || f.include.Has(k.Name)) &&
-		!f.exclude.Has(k.Name) && (f.selector == nil || f.selector.Matches(labels.Set(k.Labels)))
+	return f.enabled && (f.include.Len() == 0 || f.include.Has(k.Name)) && !f.exclude.Has(k.Name)
 }
 
 // compileSource skips the name check when known is nil.
@@ -469,19 +466,5 @@ func compileSource(source Source, o SourceOptions, known sets.Set[string]) (sour
 	}
 
 	f := sourceFilter{enabled: o.Enabled, include: compileNames("include", o.Include), exclude: compileNames("exclude", o.Exclude)}
-
-	// LabelSelectorAsSelector(nil) matches nothing; here nil means no selector.
-	switch selector := o.LabelSelector; {
-	case selector == nil:
-	case source == SourceCatalog && len(selector.MatchLabels)+len(selector.MatchExpressions) > 0:
-		errs = append(errs, fmt.Errorf("%w: %s.labelSelector: catalog definitions carry no labels; select them by name", ErrInvalidOptions, source))
-	default:
-		compiled, err := metav1.LabelSelectorAsSelector(selector)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%w: %s.labelSelector: %w", ErrInvalidOptions, source, err))
-			break
-		}
-		f.selector = compiled
-	}
 	return f, errs
 }
