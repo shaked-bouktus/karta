@@ -453,12 +453,16 @@ modules-check-exporter: ## Verify the exporter and envtest module requirements a
 
 .PHONY: test-exporter-unit
 test-exporter-unit: ## Run the exporter unit tests with the race detector (no envtest binaries required)
-	cd karta-metrics-exporter && go test -race ./cmd/... ./internal/... ./pkg/...
+	cd karta-metrics-exporter && go test -race ./cmd/... ./pkg/...
 
 .PHONY: test-exporter-integration
 test-exporter-integration: envtest ## Run the exporter envtest suite (downloads control-plane binaries)
 	cd $(EXPORTER_ENVTEST_DIR) && KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test -race ./...
+
+.PHONY: exporter-generate-mocks
+exporter-generate-mocks: ## Regenerate exporter interface mocks with pinned Mockery
+	cd karta-metrics-exporter && go run github.com/vektra/mockery/v3@v3.8.1 --config .mockery.yaml
 
 .PHONY: test-exporter
 test-exporter: test-exporter-unit test-exporter-integration ## Run the exporter unit and envtest suites
@@ -590,7 +594,7 @@ tidy: ## Run go mod tidy in every module (rewrites go.mod and go.sum)
 # status is captured into a variable rather than tested inline, so that a git
 # that cannot run is a hard error. Inline, a failing git yields empty output and
 # the emptiness check passes, reporting success having verified nothing.
-validate: tidy lib-generate lib-manifests lib-generate-mocks generate-licenses generate-samples ## Fail if any generated or module manifest is stale or untracked
+validate: tidy lib-generate lib-manifests lib-generate-mocks exporter-generate-mocks generate-licenses generate-samples ## Fail if any generated or module manifest is stale or untracked
 	@set -e; \
 	status="$$(git status --porcelain)"; \
 	test -z "$$status" || { echo "$$status"; \

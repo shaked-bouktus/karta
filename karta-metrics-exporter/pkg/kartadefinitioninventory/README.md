@@ -3,8 +3,19 @@
 
 # Karta definition inventory
 
+`Reader` defines the definition lookup contract, and `Inventory` implements it.
+`Lookup` selects for the observed root's group and kind.
+The returned `GVK` identifies the selected definition's API representation.
+A nil `Definition` with no error means confirmed absence after sources initialize.
+An error means lookup is unresolved or unavailable. Callers ignore that result.
+Source failure must not appear as absence or trigger a fallback selection.
+
 A cluster Karta for `apps/Deployment` overrides the bundled Deployment
 selection. Deleting it selects the next cluster candidate or the catalog.
+
+`Config` is constructor input. Catalog and cluster sources each have an enable
+flag and definition-name include/exclude lists. Empty includes mean all;
+exclusions win. Selected cluster definitions take precedence over catalog ones.
 
 The inventory owns two maps: cluster definitions by Karta name and catalog
 winners by workload group and kind. The catalog map is built once. Watch events

@@ -11,5 +11,5 @@ metadata:
     {{- include "karta.exporter.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    {{- dict "attribution" .Values.exporter.attribution "kartaDefinitionSource" .Values.exporter.kartaDefinitionSource | toYaml | nindent 4 }}
+    {{- dict "labelRules" .Values.exporter.labelRules "genericLabelEvaluationLimits" .Values.exporter.genericLabelEvaluationLimits "kartaDefinitionSource" .Values.exporter.kartaDefinitionSource | toYaml | nindent 4 }}
 {{- end }}

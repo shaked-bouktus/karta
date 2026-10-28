@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/apimachinery/pkg/watch"
@@ -26,6 +27,61 @@ import (
 
 	v1alpha1 "github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/api/runai/v1alpha1"
 	"github.com/dsx-ai-factory/workload-map/karta/sdk/pkg/catalog"
+)
+
+// Reader looks up the selected Karta definition for a workload type.
+type Reader interface {
+	Lookup(schema.GroupVersionKind) (Selection, error)
+}
+
+// Selection pairs a definition with the source it came from.
+type Selection struct {
+	Definition *v1alpha1.Karta
+	GVK        schema.GroupVersionKind
+	Origin     Origin
+}
+
+// Origin identifies the definition. Catalog entries have no UID or resource version.
+type Origin struct {
+	Source          Source
+	Name            string
+	UID             types.UID
+	ResourceVersion string
+}
+
+type Source string
+
+const (
+	SourceCatalog Source = "catalog"
+	SourceCluster Source = "cluster"
+)
+
+// Config selects definitions before they enter the lookup caches. A source
+// selects a definition when its name is in Include; an empty list allows all,
+// and Exclude wins.
+type Config struct {
+	Catalog CatalogConfig
+	Cluster ClusterConfig
+}
+
+type CatalogConfig struct {
+	Enabled bool
+	Include []string
+	Exclude []string
+}
+
+type ClusterConfig struct {
+	Enabled bool
+	Include []string
+	Exclude []string
+}
+
+var (
+	ErrInvalidConfig     = errors.New("invalid definition source config")
+	ErrNotReady          = errors.New("definition sources not ready")
+	ErrUnavailable       = errors.New("definition source unavailable")
+	ErrPermissionDenied  = errors.New("definition source permission denied")
+	ErrInvalidDefinition = errors.New("invalid Karta definition")
 )
 
 // Inventory serves definitions from the catalog and the cluster. Reads never
@@ -72,19 +128,19 @@ var (
 	errStopped = errors.New("inventory stopped")
 	errRelist  = errors.New("watch not resumed after a failure; relisting to confirm fresh data")
 
-	_ Interface            = (*Inventory)(nil)
+	_ Reader               = (*Inventory)(nil)
 	_ cache.ReflectorStore = reflectorStore{}
 )
 
 // New needs a client only when the cluster source is enabled.
-func New(client dynamic.Interface, options Options) (*Inventory, error) {
+func New(client dynamic.Interface, config Config) (*Inventory, error) {
 	catalogDefinitions := catalog.List()
 	known := sets.New[string]()
 	for _, k := range catalogDefinitions {
 		known.Insert(k.Name)
 	}
-	catalogFilter, catalogErrs := compileSource(SourceCatalog, options.Catalog, known)
-	clusterFilter, clusterErrs := compileSource(SourceCluster, options.Cluster, nil)
+	catalogFilter, catalogErrs := compileSource(SourceCatalog, config.Catalog.Enabled, config.Catalog.Include, config.Catalog.Exclude, known)
+	clusterFilter, clusterErrs := compileSource(SourceCluster, config.Cluster.Enabled, config.Cluster.Include, config.Cluster.Exclude, nil)
 	if err := errors.Join(append(catalogErrs, clusterErrs...)...); err != nil {
 		return nil, err
 	}
@@ -443,7 +499,7 @@ func (f sourceFilter) matches(k *v1alpha1.Karta) bool {
 }
 
 // compileSource skips the name check when known is nil.
-func compileSource(source Source, o SourceOptions, known sets.Set[string]) (sourceFilter, []error) {
+func compileSource(source Source, enabled bool, include, exclude []string, known sets.Set[string]) (sourceFilter, []error) {
 	var errs []error
 	compileNames := func(field string, names []string) sets.Set[string] {
 		set := sets.New[string]()
@@ -458,13 +514,13 @@ func compileSource(source Source, o SourceOptions, known sets.Set[string]) (sour
 				problem = fmt.Sprintf("unknown definition %q; known: %s", name, strings.Join(sets.List(known), ", "))
 			}
 			if problem != "" {
-				errs = append(errs, fmt.Errorf("%w: %s.%s: %s", ErrInvalidOptions, source, field, problem))
+				errs = append(errs, fmt.Errorf("%w: %s.%s: %s", ErrInvalidConfig, source, field, problem))
 			}
 			set.Insert(name)
 		}
 		return set
 	}
 
-	f := sourceFilter{enabled: o.Enabled, include: compileNames("include", o.Include), exclude: compileNames("exclude", o.Exclude)}
+	f := sourceFilter{enabled: enabled, include: compileNames("include", include), exclude: compileNames("exclude", exclude)}
 	return f, errs
 }

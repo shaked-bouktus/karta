@@ -32,9 +32,9 @@ var (
 	kartasGVR   = v1alpha1.GroupVersion.WithResource("kartas")
 	crdsGVR     = apiextensionsv1.SchemeGroupVersion.WithResource("customresourcedefinitions")
 	jobGVK      = schema.GroupVersionKind{Group: "batch", Version: "v1", Kind: "Job"}
-	withCatalog = inventory.Options{
-		Catalog: inventory.SourceOptions{Enabled: true, Exclude: []string{"core-pod-v1"}},
-		Cluster: inventory.SourceOptions{Enabled: true},
+	withCatalog = inventory.Config{
+		Catalog: inventory.CatalogConfig{Enabled: true, Exclude: []string{"core-pod-v1"}},
+		Cluster: inventory.ClusterConfig{Enabled: true},
 	}
 	errRefused = fmt.Errorf("dial tcp: %w", syscall.ECONNREFUSED)
 )
@@ -119,9 +119,9 @@ func create(objects ...*unstructured.Unstructured) {
 }
 
 // start runs a new inventory reading the cluster through client until the spec ends.
-func start(client dynamic.Interface, options inventory.Options) *inventory.Inventory {
+func start(client dynamic.Interface, config inventory.Config) *inventory.Inventory {
 	GinkgoHelper()
-	inv, err := inventory.New(client, options)
+	inv, err := inventory.New(client, config)
 	Expect(err).NotTo(HaveOccurred())
 	ctx, cancel := context.WithCancel(testCtx)
 	done := make(chan error, 1)
