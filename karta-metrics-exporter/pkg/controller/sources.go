@@ -375,13 +375,38 @@ func prepareWatchObject(value any, gvk schema.GroupVersionKind, full bool) (*uns
 	return object, nil
 }
 func (s *reflectorStore) Add(object any) error {
+	if s.controller.deps.ObserveEvent != nil {
+		s.observeEvent(object, false)
+	}
 	return s.controller.applyWatchEvent(s.watch, object, false)
 }
 func (s *reflectorStore) Update(object any) error {
+	if s.controller.deps.ObserveEvent != nil {
+		s.observeEvent(object, false)
+	}
 	return s.controller.applyWatchEvent(s.watch, object, false)
 }
 func (s *reflectorStore) Delete(object any) error {
+	if s.controller.deps.ObserveEvent != nil {
+		s.observeEvent(object, true)
+	}
 	return s.controller.applyWatchEvent(s.watch, object, true)
+}
+func (s *reflectorStore) observeEvent(value any, deleted bool) {
+	if tombstone, ok := value.(cache.DeletedFinalStateUnknown); ok {
+		value = tombstone.Obj
+	}
+	object, err := meta.Accessor(value)
+	if err != nil {
+		return
+	}
+	s.controller.deps.ObserveEvent(store.ObjectRef{
+		GVK:             s.watch.gvk,
+		Namespace:       object.GetNamespace(),
+		Name:            object.GetName(),
+		UID:             object.GetUID(),
+		ResourceVersion: object.GetResourceVersion(),
+	}, deleted)
 }
 func (s *reflectorStore) Resync() error { return nil }
 func (s *reflectorStore) Replace(values []any, _ string) error {

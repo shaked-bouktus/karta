@@ -77,6 +77,11 @@ type Config struct {
 	Cluster SourceConfig
 	// RequestTimeout bounds each LIST page. Zero leaves its lifetime to the caller.
 	RequestTimeout time.Duration `json:"-" yaml:"-"`
+	// ObserveEvent observes live Add/Update receipt after name filtering and before
+	// decoding or locking. It excludes Delete/Replace and requires a name, UID and
+	// resource version. Nil disables observation. Callbacks must be concurrency-safe,
+	// must not reenter or mutate the inventory, and should return promptly.
+	ObserveEvent func(Origin) `json:"-" yaml:"-"`
 }
 
 // SourceConfig selects a definition when its name is in Include; an empty
@@ -101,6 +106,7 @@ var (
 type Inventory struct {
 	client         dynamic.Interface
 	requestTimeout time.Duration
+	observeEvent   func(Origin)
 	// catalog holds the catalog winners, filtered once in New. Only cluster
 	// Kartas keep arriving, so only their filter is kept.
 	catalog       map[schema.GroupKind]definitionEntry
@@ -174,6 +180,7 @@ func New(client dynamic.Interface, config Config) (*Inventory, error) {
 	i := &Inventory{
 		client:         client,
 		requestTimeout: config.RequestTimeout,
+		observeEvent:   config.ObserveEvent,
 		catalog:        make(map[schema.GroupKind]definitionEntry),
 		clusterFilter:  clusterFilter,
 		log:            slog.Default(),
@@ -470,6 +477,9 @@ func (s reflectorStore) Add(obj any) error {
 	i := s.inventory
 	if !i.clusterFilter.matches(u.GetName()) {
 		return nil
+	}
+	if i.observeEvent != nil && u.GetName() != "" && u.GetUID() != "" && u.GetResourceVersion() != "" {
+		i.observeEvent(Origin{Source: SourceCluster, Name: u.GetName(), UID: u.GetUID(), ResourceVersion: u.GetResourceVersion()})
 	}
 	entry := decodeKarta(u)
 	i.mu.Lock()

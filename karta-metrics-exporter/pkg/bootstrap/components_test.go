@@ -10,6 +10,8 @@ import (
 
 	"github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/bootstrap"
 	"github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/config"
+	inventory "github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/kartadefinitioninventory"
+	"github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/store"
 )
 
 var _ = Describe("exporter construction", func() {
@@ -25,6 +27,19 @@ var _ = Describe("exporter construction", func() {
 		Expect(client.QPS).To(Equal(float32(3)))
 		Expect(client.Burst).To(Equal(5))
 		Expect(client.RateLimiter).To(BeNil())
+	})
+
+	It("uses the injected publication store without starting observation", func() {
+		publications := store.New()
+		components, err := bootstrap.NewWithOptions(config.DefaultConfig(), &rest.Config{Host: "https://example.test"}, bootstrap.Options{
+			Publications:      publications,
+			ObserveEvent:      func(store.ObjectRef, bool) { Fail("unexpected event during construction") },
+			ObserveDefinition: func(inventory.Origin) { Fail("unexpected definition during construction") },
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(components.Store).To(BeIdenticalTo(publications))
+		Expect(components.Runtime).NotTo(BeNil())
+		Expect(components.Definitions).NotTo(BeNil())
 	})
 
 	It("rejects missing client configuration and invalid runtime settings", func() {
