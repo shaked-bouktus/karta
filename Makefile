@@ -128,7 +128,7 @@ clean: ## Remove build outputs, coverage profiles, and release and plugin artifa
 		echo "refusing to clean $$dir: not a directory inside $(PROJECT_DIR)" >&2; \
 		exit 1; \
 	done
-	rm -fv "$(LOCALBIN)/kli" "$(LOCALBIN)/karta-operator" "$(LOCALBIN)/karta-operator-amd64" "$(LOCALBIN)/karta-operator-arm64" "$(LOCALBIN)/karta-metrics-exporter"
+	rm -fv "$(LOCALBIN)/kli" "$(LOCALBIN)/karta-operator" "$(LOCALBIN)/karta-operator-amd64" "$(LOCALBIN)/karta-operator-arm64" "$(LOCALBIN)/karta-metrics-exporter" "$(LOCALBIN)/karta-exporter-load" "$(LOCALBIN)/karta-exporter-load-cli"
 	rm -fv "$(LOCALBIN)"/*-tidy.mod "$(LOCALBIN)"/*-tidy.sum "$(LOCALBIN)"/*-license.mod "$(LOCALBIN)"/*-license.sum "$(LOCALBIN)"/*deps.json
 	rm -fv operator/cover-unit.out operator/cover-integration.out
 	rm -fv karta-wasm/karta.wasm karta-wasm/wasm_exec.js
@@ -459,6 +459,29 @@ test-exporter-unit: ## Run the exporter unit tests with the race detector (no en
 test-exporter-integration: envtest ## Run the exporter envtest suite (downloads control-plane binaries)
 	cd $(EXPORTER_ENVTEST_DIR) && KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test -race ./...
+
+.PHONY: build-exporter-load
+build-exporter-load: $(LOCALBIN) ## Build the opt-in exporter load-test binary
+	cd $(EXPORTER_ENVTEST_DIR) && go build -trimpath -o $(LOCALBIN)/karta-exporter-load ./load
+
+.PHONY: test-exporter-load
+test-exporter-load: envtest build-exporter-load ## Run isolated exporter load tests (configure with LOAD_ARGS)
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		$(LOCALBIN)/karta-exporter-load $(LOAD_ARGS)
+
+.PHONY: test-exporter-load-gotest
+test-exporter-load-gotest: envtest ## Run candidate A (configure with KARTA_LOAD_ROOTS, KARTA_LOAD_RATE, KARTA_LOAD_OUTPUT)
+	cd $(EXPORTER_ENVTEST_DIR) && KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		KARTA_LOAD=1 go test -count=1 -timeout=17m -run '^TestExporterLoad$$' -v ./loadtest
+
+.PHONY: build-exporter-load-cli
+build-exporter-load-cli: $(LOCALBIN) ## Build candidate C, the single-process load-test CLI
+	cd $(EXPORTER_ENVTEST_DIR) && go build -trimpath -o $(LOCALBIN)/karta-exporter-load-cli ./loadcli
+
+.PHONY: test-exporter-load-cli
+test-exporter-load-cli: envtest build-exporter-load-cli ## Run candidate C (configure with LOAD_CLI_ARGS)
+	cd $(EXPORTER_ENVTEST_DIR) && KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		$(LOCALBIN)/karta-exporter-load-cli $(LOAD_CLI_ARGS)
 
 .PHONY: exporter-generate-mocks
 exporter-generate-mocks: ## Regenerate exporter interface mocks with pinned Mockery

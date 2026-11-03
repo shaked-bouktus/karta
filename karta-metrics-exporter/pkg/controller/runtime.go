@@ -34,6 +34,10 @@ type Dependencies struct {
 	Inventory    inventory.Observer
 	Labels       labelresolver.Resolver
 	Publications store.Writer
+	// ObserveEvent runs at reflector callback entry, before object preparation and state locking.
+	// It may run concurrently, must not reenter the controller, and receives true for deletes.
+	// Initial and replacement LIST snapshots do not invoke it.
+	ObserveEvent func(store.ObjectRef, bool)
 }
 type Config struct {
 	IgnoredOwnerKinds                              []schema.GroupVersionKind

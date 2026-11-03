@@ -26,8 +26,22 @@ import (
 	"github.com/dsx-ai-factory/workload-map/karta-metrics-exporter/pkg/store"
 )
 
+// Options supplies optional publication storage and reflector event observation.
+type Options struct {
+	Publications store.PublicationStore
+	// ObserveEvent follows controller.Dependencies.ObserveEvent's concurrency contract.
+	ObserveEvent func(store.ObjectRef, bool)
+	// ObserveDefinition follows inventory.Config.ObserveEvent's concurrency contract.
+	ObserveDefinition func(inventory.Origin)
+}
+
 // New constructs the exporter components. The application starts their workers.
 func New(cfg config.Config, kubeConfig *rest.Config) (app.Components, error) {
+	return NewWithOptions(cfg, kubeConfig, Options{})
+}
+
+// NewWithOptions constructs the exporter with optional observation and publication storage.
+func NewWithOptions(cfg config.Config, kubeConfig *rest.Config, options Options) (app.Components, error) {
 	if err := cfg.Validate(); err != nil {
 		return app.Components{}, err
 	}
@@ -65,6 +79,7 @@ func New(cfg config.Config, kubeConfig *rest.Config) (app.Components, error) {
 	}
 	definitionConfig := cfg.KartaDefinitionSource.InventoryConfig()
 	definitionConfig.RequestTimeout = timeout
+	definitionConfig.ObserveEvent = options.ObserveDefinition
 	definitions, err := inventory.New(dynamicClient, definitionConfig)
 	if err != nil {
 		return app.Components{}, err
@@ -77,7 +92,10 @@ func New(cfg config.Config, kubeConfig *rest.Config) (app.Components, error) {
 	if err != nil {
 		return app.Components{}, err
 	}
-	publications := store.New()
+	publications := options.Publications
+	if publications == nil {
+		publications = store.New()
+	}
 	runtime, err := controller.New(controller.Config{
 		IgnoredOwnerKinds:    cfg.IgnoredOwnerKinds,
 		ResourceRules:        cfg.ResourceRules,
@@ -95,6 +113,7 @@ func New(cfg config.Config, kubeConfig *rest.Config) (app.Components, error) {
 		Inventory:    definitions,
 		Labels:       labels,
 		Publications: publications,
+		ObserveEvent: options.ObserveEvent,
 	}, reader)
 	if err != nil {
 		return app.Components{}, err

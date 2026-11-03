@@ -47,3 +47,7 @@ hack/e2e/operators/.installed-versions*
 
 # Diagnostics collected by hack/e2e/karta-operator/test.sh
 /.artifacts/
+
+# Opt-in exporter load candidate reports
+/karta-metrics-exporter/test/integration/load-result.json
+/karta-metrics-exporter/test/integration/loadtest/load-result.json
