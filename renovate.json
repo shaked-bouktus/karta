@@ -32,7 +32,7 @@
   "prConcurrentLimit": 10,
   "prHourlyLimit": 0,
   "postUpdateOptions": [
-    "gomodTidyAll",
+    "gomodTidy",
     "gomodUpdateImportPaths"
   ],
   "postUpgradeTasks": {
@@ -211,7 +211,7 @@
       ],
       "postUpgradeTasks": {
         "commands": [
-          "make lib-generate lib-manifests lib-generate-mocks exporter-generate-mocks generate-samples generate-licenses"
+          "make tidy lib-generate lib-manifests lib-generate-mocks exporter-generate-mocks generate-samples generate-licenses"
         ],
         "fileFilters": [
           "**/go.mod",

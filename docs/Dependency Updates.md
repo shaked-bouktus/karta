@@ -12,9 +12,9 @@ July 1, and October 1 at 03:00 UTC. A maintainer can start it from the Actions t
 ## What it updates
 
 - Go modules in every `go.mod`, including `karta/sdk`, `cli`, `operator`,
-  `test/e2e`, `hack/*` and `docs/examples`. Renovate tidies updated modules
-  and consumers that reference them through local `replace` directives. It then
-  regenerates SDK code, CRDs, SDK and exporter mocks, catalog files, and licenses
+  `test/e2e`, `hack/*` and `docs/examples`. Renovate tidies each updated module.
+  The license target then tidies every module, including local consumers.
+  Renovate also regenerates SDK code, CRDs, SDK and exporter mocks, catalog files, and licenses
   in the same commit. Indirect dependencies join the same Go update group.
   For major updates, Renovate also attempts to migrate Go import paths.
   API and behavior changes still need review.
@@ -30,8 +30,10 @@ The library module, `github.com/dsx-ai-factory/workload-map/karta/sdk`, is
 ignored. The other modules require it at `v0.0.0` through a relative `replace`,
 so there is no version to bump.
 
-The `gomodTidyAll` option updates module requirements and checksums.
-The separate `generate-licenses` Make target regenerates `NOTICE` and
+The `gomodTidy` option updates each changed module's requirements and checksums.
+The `generate-licenses` Make target tidies every module after Renovate applies
+all dependency updates. This order prevents one module's generated files from
+overwriting another module's pending update. The target also regenerates `NOTICE` and
 `THIRD_PARTY_LICENSES` from Go dependencies. License generation runs for every
 Renovate PR, including npm, container, and GitHub Actions updates. The generated
 files are committed when their contents change. Go updates also run the broader
