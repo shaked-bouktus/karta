@@ -32,11 +32,22 @@
   "prConcurrentLimit": 10,
   "prHourlyLimit": 0,
   "postUpdateOptions": [
-    "gomodTidy",
+    "gomodTidyAll",
     "gomodUpdateImportPaths"
   ],
+  "postUpgradeTasks": {
+    "commands": [
+      "make generate-licenses"
+    ],
+    "fileFilters": [
+      "**/go.mod",
+      "**/go.sum",
+      "NOTICE",
+      "THIRD_PARTY_LICENSES"
+    ],
+    "executionMode": "branch"
+  },
   "vulnerabilityAlerts": {
-    "enabled": true,
     "labels": [
       "renovate",
       "security"
@@ -92,6 +103,16 @@
         "golang"
       ],
       "enabled": false
+    },
+    {
+      "description": "Include indirect Go dependencies in grouped updates so shared versions can advance together.",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "indirect"
+      ],
+      "enabled": true
     },
     {
       "description": "Group non-major Go module updates.",
@@ -183,20 +204,22 @@
       "enabled": false
     },
     {
-      "description": "After a Go module, Go version or build tool update, tidy every module and regenerate what is generated from the dependencies and tools (DeepCopy, CRDs, mocks, NOTICE and THIRD_PARTY_LICENSES) in the same commit.",
+      "description": "Regenerate SDK code, CRDs, SDK and exporter mocks, catalog files, and licenses after Go module or build tool updates.",
       "matchManagers": [
         "gomod",
         "custom.regex"
       ],
       "postUpgradeTasks": {
         "commands": [
-          "make lib-generate lib-manifests lib-generate-mocks generate-licenses"
+          "make lib-generate lib-manifests lib-generate-mocks exporter-generate-mocks generate-samples generate-licenses"
         ],
         "fileFilters": [
           "**/go.mod",
           "**/go.sum",
           "karta/sdk/**",
+          "dsx-workload-exporter/**/*_mock.go",
           "charts/karta/crds/**",
+          "docs/catalog/**",
           "NOTICE",
           "THIRD_PARTY_LICENSES"
         ],
@@ -226,6 +249,38 @@
         ],
         "executionMode": "branch"
       }
+    },
+    {
+      "description": "Keep non-major security fixes enabled on release branches without overriding the major update restriction.",
+      "matchJsonata": [
+        "isVulnerabilityAlert = true"
+      ],
+      "enabled": true
+    },
+    {
+      "description": "Keep major updates disabled unless the quarterly main-branch rule enables them.",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Run routine major updates on main on the first day of each calendar quarter.",
+      "matchBaseBranches": [
+        "main"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "matchJsonata": [
+        "$not(isVulnerabilityAlert = true)"
+      ],
+      "enabled": true,
+      "schedule": [
+        "* * 1 1,4,7,10 *"
+      ],
+      "timezone": "UTC",
+      "updateNotScheduled": false
     }
   ]
 }

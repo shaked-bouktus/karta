@@ -10,7 +10,7 @@ godebug fips140=off
 require (
 	github.com/dsx-ai-factory/workload-map/dsx-workload-exporter v0.0.0
 	github.com/dsx-ai-factory/workload-map/karta/sdk v0.0.0
-	github.com/onsi/ginkgo/v2 v2.34.0
+	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
 	k8s.io/api v0.37.2
 	k8s.io/apiextensions-apiserver v0.37.2
@@ -66,7 +66,7 @@ require (
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/samber/lo v1.53.0 // indirect
-	github.com/spf13/pflag v1.1.0 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect

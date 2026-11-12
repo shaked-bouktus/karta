@@ -13,7 +13,7 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### github.com/onsi/ginkgo/v2
 - Name: github.com/onsi/ginkgo/v2
-- Version: v2.34.0
+- Version: v2.33.1
 - License: MIT
 
 ### github.com/onsi/gomega
@@ -183,7 +183,7 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### github.com/spf13/pflag
 - Name: github.com/spf13/pflag
-- Version: v1.1.0
+- Version: v1.0.10
 - License: BSD-3-Clause
 
 ### github.com/spf13/viper
