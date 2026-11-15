@@ -163,7 +163,7 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### sigs.k8s.io/json
 - Name: sigs.k8s.io/json
-- Version: v0.0.0-20250730193827-2d320260d730
+- Version: v0.0.0-20260909141634-11ed52e25bc5
 - License: Apache-2.0
 
 ### sigs.k8s.io/randfill
