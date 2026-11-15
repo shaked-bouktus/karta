@@ -113,7 +113,7 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### go.yaml.in/yaml/v2
 - Name: go.yaml.in/yaml/v2
-- Version: v2.4.4
+- Version: v2.4.5
 - License: Apache-2.0
 
 ### golang.org/x/mod
@@ -233,12 +233,12 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### github.com/go-openapi/jsonpointer
 - Name: github.com/go-openapi/jsonpointer
-- Version: v1.0.0
+- Version: v1.0.2
 - License: Apache-2.0
 
 ### github.com/go-openapi/jsonreference
 - Name: github.com/go-openapi/jsonreference
-- Version: v1.0.0
+- Version: v1.0.3
 - License: Apache-2.0
 
 ### github.com/go-openapi/swag
@@ -313,7 +313,7 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### github.com/google/gnostic-models
 - Name: github.com/google/gnostic-models
-- Version: v0.7.0
+- Version: v0.7.1
 - License: Apache-2.0
 
 ### github.com/google/uuid
@@ -403,7 +403,7 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### google.golang.org/protobuf
 - Name: google.golang.org/protobuf
-- Version: v1.36.12-0.20260120151049-f2248ac996af
+- Version: v1.36.12
 - License: BSD-3-Clause
 
 ### gopkg.in/evanphx/json-patch.v4
