@@ -8,7 +8,7 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### github.com/itchyny/gojq
 - Name: github.com/itchyny/gojq
-- Version: v0.12.20
+- Version: v0.12.19
 - License: MIT
 
 ### github.com/onsi/ginkgo/v2
@@ -183,7 +183,7 @@ For complete license texts, please refer to the source repositories or the LICEN
 
 ### github.com/spf13/pflag
 - Name: github.com/spf13/pflag
-- Version: v1.1.0
+- Version: v1.0.10
 - License: BSD-3-Clause
 
 ### github.com/spf13/viper

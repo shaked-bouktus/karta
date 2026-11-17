@@ -3,7 +3,7 @@ module github.com/dsx-ai-factory/workload-map/karta/sdk
 go 1.27.4
 
 require (
-	github.com/itchyny/gojq v0.12.20
+	github.com/itchyny/gojq v0.12.19
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/samber/lo v1.53.0
