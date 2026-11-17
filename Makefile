@@ -44,7 +44,7 @@ GOLANGCI_LINT_VERSION       ?= v2.15.0
 # renovate: datasource=go depName=sigs.k8s.io/controller-tools
 CONTROLLER_TOOLS_VERSION    ?= v0.23.0
 # renovate: datasource=go depName=go.elastic.co/go-licence-detector
-GO_LICENCE_DETECTOR_VERSION ?= v0.11.0
+GO_LICENCE_DETECTOR_VERSION ?= v0.11.1
 ENVTEST_VERSION             ?= release-0.23
 # renovate: datasource=go depName=github.com/goreleaser/goreleaser/v2
 GORELEASER_VERSION          ?= v2.20.0
