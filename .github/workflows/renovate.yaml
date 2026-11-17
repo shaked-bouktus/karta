@@ -10,7 +10,6 @@ name: Renovate
 on:
   schedule:
     - cron: "0 3 * * 0"
-    - cron: "0 3 1 1,4,7,10 *"
   workflow_dispatch:
     inputs:
       log-level:
@@ -35,7 +34,7 @@ jobs:
     timeout-minutes: 60
     env:
       # renovate: datasource=npm depName=renovate
-      RENOVATE_VERSION: 44.222.3
+      RENOVATE_VERSION: 44.239.1
     steps:
       - name: Mint GitHub App token
         id: app-token
@@ -112,8 +111,8 @@ jobs:
           RENOVATE_BINARY_SOURCE: global
           RENOVATE_GIT_AUTHOR: ${{ steps.identity.outputs.author }}
           RENOVATE_FORCE: ${{ steps.branches.outputs.force }}
-          # Every PR regenerates licenses. Go updates also run the generation
-          # command for their branch layout, including older release branches.
-          RENOVATE_ALLOWED_COMMANDS: '["^make generate-licenses$", "^make tidy lib-generate lib-manifests lib-generate-mocks exporter-generate-mocks generate-samples generate-licenses$", "^make tidy lib-generate lib-manifests lib-generate-mocks generate-samples generate-licenses$", "^make generate manifests generate-mocks generate-licenses$"]'
+          # The second command is the regeneration on release branches, which
+          # keep the make target names from before the karta/sdk move.
+          RENOVATE_ALLOWED_COMMANDS: '["^make lib-generate lib-manifests lib-generate-mocks generate-licenses$", "^make generate manifests generate-mocks generate-licenses$"]'
           LOG_LEVEL: ${{ inputs.log-level || 'info' }}
         run: npx --yes "renovate@${RENOVATE_VERSION}"

@@ -27,7 +27,7 @@ COMPONENTS := lib cli operator exporter karta-wasm release-helper operator-updat
 # Every Go module in the repo. The tidy target fans out over this rather than
 # COMPONENTS because an untidy manifest in a module that ships no
 # binary (the examples, the e2e fixtures) still breaks a downstream `go get`.
-GO_MODULES := karta/sdk cli karta-wasm operator dsx-workload-exporter dsx-workload-exporter/test/integration test/e2e hack/imagelock hack/operator-updates hack/release \
+GO_MODULES := karta/sdk cli karta-wasm operator dsx-workload-exporter dsx-workload-exporter/test/integration test/e2e hack/imagelock hack/operator-updates \
 	docs/examples/quickstart docs/examples/controller-runtime \
 	hack/e2e/operators/nim/image
 
@@ -44,10 +44,10 @@ GOLANGCI_LINT_VERSION       ?= v2.15.0
 # renovate: datasource=go depName=sigs.k8s.io/controller-tools
 CONTROLLER_TOOLS_VERSION    ?= v0.23.0
 # renovate: datasource=go depName=go.elastic.co/go-licence-detector
-GO_LICENCE_DETECTOR_VERSION ?= v0.11.0
+GO_LICENCE_DETECTOR_VERSION ?= v0.11.1
 ENVTEST_VERSION             ?= release-0.23
 # renovate: datasource=go depName=github.com/goreleaser/goreleaser/v2
-GORELEASER_VERSION          ?= v2.20.0
+GORELEASER_VERSION          ?= v2.20.2
 # Kubernetes control-plane (apiserver, etcd, kubectl) version envtest downloads.
 ENVTEST_K8S_VERSION         ?= 1.31.0
 # Control-plane version for the chart's admission policy tests; MutatingAdmissionPolicy v1 needs 1.36+.
