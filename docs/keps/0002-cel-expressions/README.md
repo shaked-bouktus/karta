@@ -314,18 +314,61 @@ Omit it for fields that are immutable or should only be read.
 
 A location read returns the value at that location. A fixed path uses no CEL and never fetches references.  
 A missing segment or list index returns `ErrValueNotFound`. A segment through a scalar is an error.  
-A component that declares `instanceIds` cannot use a fixed path.
+A null value, at the end of the path or in the middle, also returns `ErrValueNotFound`.  
+A read expression that returns null or an empty optional returns `ErrValueNotFound`. An optional with a value returns that value.
+
+Before CEL sees the workload, references or a Pod, the SDK removes map entries whose value is null. List elements stay in place.  
+A null field is therefore the same as a missing field in every expression.  
+A jq default `X // D` becomes `X.orValue(D)`, with `.?` before each optional segment.  
+For example, `.spec.replicas // 1` becomes `object.?spec.?replicas.orValue(1)`.  
+jq `//` also replaces false. A boolean field with a default other than false needs an explicit check.
+
+A shared location or a location read can set `default`. The SDK returns it when the value is missing or null.  
+A false match still returns `ErrValueNotFound`, because the field does not apply to that workload.  
+A write and an expression read cannot set `default`. An expression uses `orValue` instead.  
+The SDK converts the default to the field type when it loads the definition, so a wrong type fails validation.
+
+```yaml
+replicas:
+  path: /spec/replicas
+  default: 1
+```
+
+A component with `instanceIds` has one instance for each ID that `instanceIds.read.expression` returns.  
+The SDK evaluates each read, write and match once for each instance.  
+`instance` holds the ID, and `index` holds its position in the ID list.  
+A missing value affects only its own instance. An empty or duplicate ID fails the component.  
+A fixed path names the same place for every instance, so such a component cannot use one.  
+This Dynamo component maps one entry of `spec.components` to each instance:
+
+```yaml
+instanceIds:
+  read:
+    expression: object.spec.components.map(c, c.name)
+specDefinition:
+  fragmentedPodSpecDefinition:
+    schedulerName:
+      pathExpression: '"/spec/components/" + string(index) + "/podTemplate/spec/schedulerName"'
+```
+
+Instances keep the order of the ID list.  
+IDs from a list must map it without a filter or a sort, so `index` addresses the same entry.  
+IDs from map keys must use `.sort()`, because CEL map keys have no fixed order. Paths into a map use `instance` as the key.
 
 Each side evaluates its own `matchExpression` first. Omission means true.  
 A false read match skips the read expression and returns `ErrValueNotFound` for that field. Whole-workload reads skip fields with this error.  
 A false write match returns an error before changing anything.  
 A match must return a boolean; errors never mean false.  
+An instance ID is a string. The ID expression returns a list of strings, and a Pod instance ID expression returns one string.  
+A scale value is an integer, a double with no fraction, or a string that holds a base-10 integer, such as a Knative annotation. It must fit in int32.  
+Any other result type is an error that names the component and field.  
+Each evaluation has a default cost limit of 1,000,000 and a timeout of 1 second. Exceeding either is an error.  
 CEL conditional expressions handle alternative reads or locations.
 
 | Current API | Proposed API |
 | --- | --- |
 | `containerPath`, `podSpecPath`, `replicasPath`, other value paths | `container`, `podSpec`, `replicas`, each with a shared location, or `read`, `write`, or both |
-| `instanceIdPath` | `instanceIds.read.expression`; read-only |
+| `instanceIdPath` | `instanceIds.read.expression`, which returns the ID list; read-only |
 | Condition `path` and selector `keyPath`/`idPath` | `read.expression` inside the same definition or selector |
 | `groupByKeyPaths` | `groupByExpressions`; evaluated separately for each Pod |
 | Status matcher `byExpression.expression` | CEL boolean: `true` matches the status; remove `expectedResult` |
@@ -410,6 +453,15 @@ spec:
                       required: [name]
                       properties:
                         name: {type: string, minLength: 1}
+                        instanceIds:
+                          type: object
+                          required: [read]
+                          properties:
+                            read:
+                              type: object
+                              required: [expression]
+                              properties:
+                                expression: {type: string, minLength: 1}
                         specDefinition:
                           type: object
                           properties:
@@ -426,12 +478,19 @@ spec:
                                     !has(self.matchExpression) ||
                                     has(self.path) || has(self.pathExpression)
                                   message: A shared matchExpression needs a shared path or pathExpression.
+                                - rule: >-
+                                    !has(self.default) ||
+                                    has(self.path) || has(self.pathExpression)
+                                  message: A shared default needs a shared path or pathExpression.
                               properties:
                                 matchExpression: {type: string, minLength: 1}
                                 path:
                                   type: string
                                   description: JSON Pointer; an empty string selects the root.
                                 pathExpression: {type: string, minLength: 1}
+                                default:
+                                  x-kubernetes-preserve-unknown-fields: true
+                                  description: Read result for a missing or null value.
                                 read:
                                   type: object
                                   x-kubernetes-validations:
@@ -439,11 +498,15 @@ spec:
                                         [has(self.path), has(self.pathExpression),
                                         has(self.expression)].filter(x, x).size() == 1
                                       message: Set exactly one of path, pathExpression, or expression.
+                                    - rule: "!has(self.default) || !has(self.expression)"
+                                      message: An expression read cannot set default; use orValue.
                                   properties:
                                     matchExpression: {type: string, minLength: 1}
                                     path: {type: string}
                                     pathExpression: {type: string, minLength: 1}
                                     expression: {type: string, minLength: 1}
+                                    default:
+                                      x-kubernetes-preserve-unknown-fields: true
                                 write:
                                   type: object
                                   x-kubernetes-validations:
@@ -459,6 +522,7 @@ spec:
 
 A shared location, a read and a write each have an optional match expression.  
 An omitted match means true; `path: ""` remains a valid location.  
+`default` holds any JSON value. The SDK checks its type against the field when it loads the definition.  
 Reference lists use `matchLabels` and `matchExpressions`, with literal `value` or CEL `expression` entries. Their full schema is not shown here.  
 Most Karta users run the SDK without the Karta operator, so the schema rules are not the main check.  
 The SDK checks every definition when it loads it, and the webhook runs the same check.  
