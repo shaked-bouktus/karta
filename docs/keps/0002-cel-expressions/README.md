@@ -12,7 +12,8 @@
 ## Summary
 
 Replace jq with [CEL](https://kubernetes.io/docs/reference/using-api/cel/) in Karta definitions.  
-Separate read expressions from write locations, with an optional match expression on each.  
+Separate reads from write locations, with an optional match expression on each.  
+A read uses a location or a CEL expression. A field that reads and writes one location states it once.  
 Read named references through a Kubernetes reader or objects supplied by the caller.  
 The SDK changes the workload locally; the caller saves it to Kubernetes.
 
@@ -183,7 +184,7 @@ spec:
       statusDefinition:
         conditionsDefinition:
           read:
-            expression: object.?status.?conditions.orValue(null)
+            path: /status/conditions
           typeFieldName: type
           statusFieldName: status
           messageFieldName: message
@@ -214,35 +215,17 @@ spec:
         specDefinition:
           fragmentedPodSpecDefinition:
             schedulerName:
-              read:
-                expression: object.?spec.?predictor.?schedulerName.orValue(null)
-              write:
-                path: /spec/predictor/schedulerName
+              path: /spec/predictor/schedulerName
             labels:
-              read:
-                expression: object.?spec.?predictor.?labels.orValue(null)
-              write:
-                path: /spec/predictor/labels
+              path: /spec/predictor/labels
             annotations:
-              read:
-                expression: object.?spec.?predictor.?annotations.orValue(null)
-              write:
-                path: /spec/predictor/annotations
+              path: /spec/predictor/annotations
             podAffinity:
-              read:
-                expression: object.?spec.?predictor.?affinity.?podAffinity.orValue(null)
-              write:
-                path: /spec/predictor/affinity/podAffinity
+              path: /spec/predictor/affinity/podAffinity
             nodeAffinity:
-              read:
-                expression: object.?spec.?predictor.?affinity.?nodeAffinity.orValue(null)
-              write:
-                path: /spec/predictor/affinity/nodeAffinity
+              path: /spec/predictor/affinity/nodeAffinity
             containers:
-              read:
-                expression: object.?spec.?predictor.?containers.orValue(null)
-              write:
-                path: /spec/predictor/containers
+              path: /spec/predictor/containers
             container:
               read:
                 matchExpression: variables.containerKeys.size() > 0
@@ -256,25 +239,16 @@ spec:
                   "/spec/predictor/" +
                   variables.containerKeys[0].replace("~", "~0").replace("/", "~1")
             priorityClassName:
-              read:
-                expression: object.?spec.?predictor.?priorityClassName.orValue(null)
-              write:
-                path: /spec/predictor/priorityClassName
+              path: /spec/predictor/priorityClassName
         scaleDefinition:
           minReplicas:
-            read:
-              expression: object.?spec.?predictor.?minReplicas.orValue(null)
-            write:
-              path: /spec/predictor/minReplicas
+            path: /spec/predictor/minReplicas
           maxReplicas:
-            read:
-              expression: object.?spec.?predictor.?maxReplicas.orValue(null)
-            write:
-              path: /spec/predictor/maxReplicas
+            path: /spec/predictor/maxReplicas
         podSelector:
           componentTypeSelector:
             read:
-              expression: object.?metadata.?labels[?"component"].orValue(null)
+              path: /metadata/labels/component
             value: predictor
       - name: transformer
         kind:
@@ -284,30 +258,18 @@ spec:
         ownerRef: inferenceservice
         specDefinition:
           podSpec:
-            read:
-              expression: object.?spec.?transformer.orValue(null)
-            write:
-              path: /spec/transformer
+            path: /spec/transformer
           metadata:
-            read:
-              expression: object.?spec.?transformer.orValue(null)
-            write:
-              path: /spec/transformer
+            path: /spec/transformer
         scaleDefinition:
           minReplicas:
-            read:
-              expression: object.?spec.?transformer.?minReplicas.orValue(null)
-            write:
-              path: /spec/transformer/minReplicas
+            path: /spec/transformer/minReplicas
           maxReplicas:
-            read:
-              expression: object.?spec.?transformer.?maxReplicas.orValue(null)
-            write:
-              path: /spec/transformer/maxReplicas
+            path: /spec/transformer/maxReplicas
         podSelector:
           componentTypeSelector:
             read:
-              expression: object.?metadata.?labels[?"component"].orValue(null)
+              path: /metadata/labels/component
             value: transformer
   optimizationInstructions:
     gangScheduling:
@@ -326,12 +288,33 @@ spec:
 
 ### CRD rules
 
-A field has `read`, `write`, or both. `read.expression` returns its value.  
-`write` has exactly one of `path` or `pathExpression`.  
+A location names one place in the object. It has exactly one of `path` or `pathExpression`, and an optional `matchExpression`.  
 A fixed path is a JSON Pointer ([RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)) such as `/spec/predictor/schedulerName`; a path expression returns one.  
-`path: ""` selects the workload root, as needed for a standalone Pod's `podTemplateSpec`.  
+`path: ""` selects the workload root, as needed for a standalone Pod's `podTemplateSpec`.
+
+A field sets a shared location, or it sets `read`, `write`, or both. It never sets a shared location together with `read` or `write`.  
+`write` is a location. `read` is a location, or an `expression` that computes the value.  
+A shared location is the short form of the same location in both `read` and `write`.  
+These two fields have the same meaning:
+
+```yaml
+schedulerName:
+  path: /spec/predictor/schedulerName
+---
+schedulerName:
+  read:
+    path: /spec/predictor/schedulerName
+  write:
+    path: /spec/predictor/schedulerName
+```
+
+With the short form, a read after a write returns the written value.  
 Without `write`, the SDK rejects mutation requests for that field.  
 Omit it for fields that are immutable or should only be read.
+
+A location read returns the value at that location. A fixed path uses no CEL and never fetches references.  
+A missing segment or list index returns `ErrValueNotFound`. A segment through a scalar is an error.  
+A component that declares `instanceIds` cannot use a fixed path.
 
 Each side evaluates its own `matchExpression` first. Omission means true.  
 A false read match skips the read expression and returns `ErrValueNotFound` for that field. Whole-workload reads skip fields with this error.  
@@ -341,7 +324,7 @@ CEL conditional expressions handle alternative reads or locations.
 
 | Current API | Proposed API |
 | --- | --- |
-| `containerPath`, `podSpecPath`, `replicasPath`, other value paths | `container`, `podSpec`, `replicas`, each with `read`, `write`, or both |
+| `containerPath`, `podSpecPath`, `replicasPath`, other value paths | `container`, `podSpec`, `replicas`, each with a shared location, or `read`, `write`, or both |
 | `instanceIdPath` | `instanceIds.read.expression`; read-only |
 | Condition `path` and selector `keyPath`/`idPath` | `read.expression` inside the same definition or selector |
 | `groupByKeyPaths` | `groupByExpressions`; evaluated separately for each Pod |
@@ -433,14 +416,33 @@ spec:
                             podTemplateSpec:
                               type: object
                               x-kubernetes-validations:
-                                - rule: has(self.read) || has(self.write)
-                                  message: Set read, write, or both.
+                                - rule: >-
+                                    (has(self.path) || has(self.pathExpression)) !=
+                                    (has(self.read) || has(self.write))
+                                  message: Set a shared location, or read, write, or both.
+                                - rule: "!(has(self.path) && has(self.pathExpression))"
+                                  message: Set at most one of path or pathExpression.
+                                - rule: >-
+                                    !has(self.matchExpression) ||
+                                    has(self.path) || has(self.pathExpression)
+                                  message: A shared matchExpression needs a shared path or pathExpression.
                               properties:
+                                matchExpression: {type: string, minLength: 1}
+                                path:
+                                  type: string
+                                  description: JSON Pointer; an empty string selects the root.
+                                pathExpression: {type: string, minLength: 1}
                                 read:
                                   type: object
-                                  required: [expression]
+                                  x-kubernetes-validations:
+                                    - rule: >-
+                                        [has(self.path), has(self.pathExpression),
+                                        has(self.expression)].filter(x, x).size() == 1
+                                      message: Set exactly one of path, pathExpression, or expression.
                                   properties:
                                     matchExpression: {type: string, minLength: 1}
+                                    path: {type: string}
+                                    pathExpression: {type: string, minLength: 1}
                                     expression: {type: string, minLength: 1}
                                 write:
                                   type: object
@@ -455,11 +457,13 @@ spec:
                                     pathExpression: {type: string, minLength: 1}
 ```
 
-Read and write have separate optional match expressions.  
-An omitted match means true; `path: ""` remains a valid write location.  
+A shared location, a read and a write each have an optional match expression.  
+An omitted match means true; `path: ""` remains a valid location.  
 Reference lists use `matchLabels` and `matchExpressions`, with literal `value` or CEL `expression` entries. Their full schema is not shown here.  
-The webhook and local loader compile expressions, check their available inputs, and reject variable dependency cycles.  
-They also check fixed JSON Pointer syntax; the SDK checks computed pointers after evaluation.
+Most Karta users run the SDK without the Karta operator, so the schema rules are not the main check.  
+The SDK checks every definition when it loads it, and the webhook runs the same check.  
+The check compiles expressions, checks their available inputs, and rejects variable dependency cycles.  
+It also checks fixed JSON Pointer syntax; the SDK checks computed pointers after evaluation.
 
 </details>
 

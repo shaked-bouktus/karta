@@ -12,8 +12,11 @@ Karta definitions use `*kartav1alpha2.Karta`; decoded workloads use `*unstructur
 
 ## Validation
 
-The Karta operator's validating webhook checks definitions on create and update.  
-The same validator is available to SDK callers:
+Most Karta users run the SDK without the Karta operator, so the SDK checks every definition itself.  
+Each SDK entry point compiles the definition before it uses it: `resource.NewComponentFactory`, `resource.NewComponentFactoryFromObject`, `instructions.NewStructureSummary` and `tree.Open`.  
+Compilation validates the definition, expands each shared location into `read` and `write`, and compiles the CEL programs.  
+After compilation, SDK code sees only `read` and `write`. The operator's validating webhook runs the same check on create and update.  
+The validator is also available to SDK callers:
 
 ```go
 if err := kartav1alpha2.NewKartaValidator(kserveKarta).Validate(); err != nil {
@@ -34,27 +37,34 @@ The validator checks fixed paths when loading the definition. Paths returned by 
 
 ## Value accessors
 
-An accessor defines a read, a write, or both:
+A `Location` names one place in the workload. A write is a location. A read is a location or an expression.  
+An accessor sets a shared location, or a read, a write, or both:
 
 ```go
-type ValueAccessor struct {
-    Read  *ReadAccessor  `json:"read,omitempty"`
-    Write *WriteAccessor `json:"write,omitempty"`
-}
-
-type ReadAccessor struct {
-    MatchExpression string `json:"matchExpression,omitempty"`
-    Expression      string `json:"expression"`
-}
-
-type WriteAccessor struct {
+type Location struct {
     MatchExpression string  `json:"matchExpression,omitempty"`
     Path            *string `json:"path,omitempty"`
     PathExpression  string  `json:"pathExpression,omitempty"`
 }
+
+type ReadAccessor struct {
+    Location   `json:",inline"`
+    Expression string `json:"expression,omitempty"`
+}
+
+type ValueAccessor struct {
+    Location `json:",inline"`
+    Read     *ReadAccessor `json:"read,omitempty"`
+    Write    *Location     `json:"write,omitempty"`
+}
 ```
 
-Each operation evaluates its match before the read expression or write path. An omitted match means true.  
+A location sets exactly one of `Path` or `PathExpression`. A read sets exactly one of those two or `Expression`.  
+A shared location cannot appear together with `Read` or `Write`. Compilation copies it into both, so it has no behavior of its own.  
+A location read walks the pointer through `object` and uses no CEL for a fixed path.  
+A missing segment or list index returns `resource.ErrValueNotFound`. A segment through a scalar is an error.
+
+Each operation evaluates its match before the read expression or location. An omitted match means true.  
 A false read match returns `resource.ErrValueNotFound`; whole-workload reads skip that field.  
 A false write match prevents the change. Type and evaluation errors remain errors.  
 An omitted `Path` differs from `path: ""`, which selects the whole workload.
@@ -62,7 +72,7 @@ An omitted `Path` differs from `path: ""`, which selects the whole workload.
 | Expression | Inputs |
 | --- | --- |
 | Workload read, its match, or a shared variable | Original workload as `object`, plus `variables` and `references` |
-| Write path or its match | The same inputs, plus `instance` and `index` |
+| Write path expression or its match | The same inputs, plus `instance` and `index` |
 | Pod selector or grouping expression | One Pod as `object` only |
 | Reference lookup or selector | `object` is the workload passed to the SDK, such as a TrainJob. These expressions cannot use `variables` or `references`. |
 
