@@ -91,12 +91,18 @@ The SDK evaluates each read, write and match once for each instance. Getters ret
 For IDs `["gpu", "cpu"]`, the `"gpu"` instance has `instance = "gpu"` and `index = 0`.  
 A read that returns `resource.ErrValueNotFound` affects only its own instance. The other instances keep their values.  
 Without `instanceIds`, the component has one instance with `instance = ""` and `index = 0`.  
+If its Pod location is missing or its match is false, its reads return `resource.ErrValueNotFound`. The component is then absent, which is not an error.  
 Variables do not receive `instance` or `index`, so each variable is evaluated once for each workload.  
 Write expressions cannot read the caller's new value.
 
-The ID expression returns a list. An empty or duplicate ID fails the component; an empty list means no instances.  
+The ID expression returns a list. An empty or duplicate ID fails the component with `resource.ErrInstanceMismatch`. An empty list means no instances.  
+The `karta` package from the Workload front door KEP returns the same sentinel, for example as an alias.  
+Each path is evaluated for its own ID, so the number of values always matches the number of IDs.  
 The SDK keeps the order of the list, and `index` is the position in it.  
 IDs from a list must map it without a filter or a sort, so `index` addresses the same entry in the workload.  
+Compilation enforces part of this rule. If a read, write or match of the component uses `index`, the SDK walks the parsed syntax tree of the ID expression.  
+It rejects a call to `sort`, `sortBy`, `reverse`, `slice` or `distinct`, and a `filter` or three-argument `map` macro.  
+The SDK cannot detect every reorder. For example, `a + b` shifts the positions of `b` without an error. The recorded e2e flow proves the order.  
 IDs from map keys must use `.sort()`, because CEL map keys have no fixed order.
 
 The SDK compiles each definition revision once and reuses the CEL programs.  

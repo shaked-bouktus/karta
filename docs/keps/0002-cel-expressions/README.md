@@ -337,7 +337,7 @@ replicas:
 A component with `instanceIds` has one instance for each ID that `instanceIds.read.expression` returns.  
 The SDK evaluates each read, write and match once for each instance.  
 `instance` holds the ID, and `index` holds its position in the ID list.  
-A missing value affects only its own instance. An empty or duplicate ID fails the component.  
+A missing value affects only its own instance. An empty or duplicate ID fails the component with `ErrInstanceMismatch`.  
 A fixed path names the same place for every instance, so such a component cannot use one.  
 This Dynamo component maps one entry of `spec.components` to each instance:
 
@@ -353,7 +353,16 @@ specDefinition:
 
 Instances keep the order of the ID list.  
 IDs from a list must map it without a filter or a sort, so `index` addresses the same entry.  
+If a path of the component uses `index`, an ID expression that calls `sort`, `sortBy`, `reverse`, `slice`, `distinct`, `filter` or the three-argument `map` fails validation.  
+This check does not catch every reorder. For example, joining two lists with `+` shifts the positions without an error.  
+The recorded e2e flow of each catalog definition proves its order.  
 IDs from map keys must use `.sort()`, because CEL map keys have no fixed order. Paths into a map use `instance` as the key.
+
+The SDK evaluates each path for its own ID, so a path cannot return more or fewer values than there are IDs.  
+This answers open decision 4 of the [Workload front door KEP](https://github.com/dsx-ai-factory/workload-map/pull/687). That decision asks for one traversal that derives IDs and template paths together.
+
+A component without `instanceIds` has one instance, with `instance` set to `""` and `index` set to 0.  
+If its Pod location is missing or its match is false, its reads return `ErrValueNotFound`. The component is then absent, which is not an error.
 
 Each side evaluates its own `matchExpression` first. Omission means true.  
 A false read match skips the read expression and returns `ErrValueNotFound` for that field. Whole-workload reads skip fields with this error.  
