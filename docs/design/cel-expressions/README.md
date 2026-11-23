@@ -111,7 +111,16 @@ Results must have the expected type: a boolean for a match or a string for a wri
 Instance IDs are strings: a list of strings from `instanceIds`, and one string from a Pod instance selector.  
 Authors convert other types with `string(x)`, so the workload and the Pod use the same text.  
 A scale value is a CEL integer, a double with no fraction, or a string that holds a base-10 integer. It must fit in int32.  
-The string form reads Knative annotations such as `autoscaling.knative.dev/min-scale: "2"` with a plain location.  
+The string form reads Knative annotations such as `autoscaling.knative.dev/min-scale: "2"` with a location `read`.  
+A scale write sends an integer, so a field that keeps scale in a string sets `read` only:
+
+```yaml
+minReplicas:
+  read:
+    path: /spec/template/metadata/annotations/autoscaling.knative.dev~1min-scale
+    default: 1
+```
+
 Each CEL evaluation has a cost limit of 1,000,000, the Kubernetes limit for one validation call, and a timeout of 1 second.  
 The timeout covers CEL only. Reference reads use the caller's context. Evaluation also respects context cancellation.  
 One SDK option changes both limits on the factories, `tree.Open`, `instructions.NewStructureSummary` and the Pod querier.  

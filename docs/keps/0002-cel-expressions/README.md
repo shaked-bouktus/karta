@@ -360,7 +360,8 @@ A false read match skips the read expression and returns `ErrValueNotFound` for 
 A false write match returns an error before changing anything.  
 A match must return a boolean; errors never mean false.  
 An instance ID is a string. The ID expression returns a list of strings, and a Pod instance ID expression returns one string.  
-A scale value is an integer, a double with no fraction, or a string that holds a base-10 integer, such as a Knative annotation. It must fit in int32.  
+A scale value is an integer, a double with no fraction, or a string that holds a base-10 integer. It must fit in int32.  
+A scale write sends an integer, so a scale kept in a string, such as a Knative annotation, is read-only.  
 Any other result type is an error that names the component and field.  
 Each evaluation has a default cost limit of 1,000,000 and a timeout of 1 second. Exceeding either is an error.  
 CEL conditional expressions handle alternative reads or locations.
