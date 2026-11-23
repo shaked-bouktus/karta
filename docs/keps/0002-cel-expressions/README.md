@@ -329,7 +329,7 @@ CEL conditional expressions handle alternative reads or locations.
 | Condition `path` and selector `keyPath`/`idPath` | `read.expression` inside the same definition or selector |
 | `groupByKeyPaths` | `groupByExpressions`; evaluated separately for each Pod |
 | Status matcher `byExpression.expression` | CEL boolean: `true` matches the status; remove `expectedResult` |
-| Suspend/resume action `path` and JSON `value` | Action `write` location and the same JSON `value` |
+| Suspend/resume action `path` and JSON `value` | Root component action `write` location and the same JSON `value`. The value replaces what is at the location, and `null` removes the key |
 | No shared expressions | `spec.variables[{name, expression}]` |
 | No external inputs | `spec.structureDefinition.references` |
 
@@ -647,6 +647,14 @@ Keep one SDK format initially: [JSON Merge Patch](https://www.rfc-editor.org/rfc
 It covers the model image, labels, resources and scalar values in these examples.  
 Null inside a map patch deletes a key; arrays replace in full.  
 JSON Patch can be added for a demonstrated need to store literal null or edit a list by position.  
+A write names a field of the definition, and the definition gives the path in the workload.  
+The SDK also returns the raw value at a write location, so a caller can change a full array without losing operator-specific fields.  
+Suspend and resume actions do not merge. Each action sets its value exactly, and a null value removes the key.
+
+A typed pod-template callback is an alternative interface. The caller edits a `corev1.PodTemplateSpec`, and the SDK routes each change to a mapped field.  
+It hides which fields a definition maps, but it cannot write scale values or other fields outside the pod template.  
+Go types also drop fields they do not know, so a changed list can lose operator-specific fields.  
+Such a helper can run on top of the raw read and the merge patch write, in a separate proposal.  
 Keeping jq alongside CEL would require maintaining and testing both expression contracts.
 
 ## History
