@@ -49,20 +49,30 @@ type Location struct {
 
 type ReadAccessor struct {
     Location   `json:",inline"`
-    Expression string `json:"expression,omitempty"`
+    Expression string                `json:"expression,omitempty"`
+    Default    *apiextensionsv1.JSON `json:"default,omitempty"`
 }
 
 type ValueAccessor struct {
     Location `json:",inline"`
-    Read     *ReadAccessor `json:"read,omitempty"`
-    Write    *Location     `json:"write,omitempty"`
+    Default  *apiextensionsv1.JSON `json:"default,omitempty"`
+    Read     *ReadAccessor         `json:"read,omitempty"`
+    Write    *Location             `json:"write,omitempty"`
 }
 ```
 
 A location sets exactly one of `Path` or `PathExpression`. A read sets exactly one of those two or `Expression`.  
 A shared location cannot appear together with `Read` or `Write`. Compilation copies it into both, so it has no behavior of its own.  
 A location read walks the pointer through `object` and uses no CEL for a fixed path.  
-A missing segment or list index returns `resource.ErrValueNotFound`. A segment through a scalar is an error.
+A missing segment or list index returns `resource.ErrValueNotFound`. A segment through a scalar is an error.  
+A null value at the end of the path or in the middle also returns `resource.ErrValueNotFound`.  
+Typed getters cannot show a null apart from a missing value, and the API server drops most nulls from stored objects.  
+A read expression that returns null or an empty optional returns `resource.ErrValueNotFound`. The SDK unwraps an optional that holds a value.
+
+A shared location or a location read can set `Default`. Compilation copies a shared default into `Read` only.  
+The SDK returns the default when the value is missing or null. A false match still returns `resource.ErrValueNotFound`.  
+Validation rejects a default on an expression read and converts each default to the field type.  
+For example, `default: "one"` on `replicas` fails when the definition loads, not when a read runs.
 
 Each operation evaluates its match before the read expression or location. An omitted match means true.  
 A false read match returns `resource.ErrValueNotFound`; whole-workload reads skip that field.  
@@ -71,23 +81,56 @@ An omitted `Path` differs from `path: ""`, which selects the whole workload.
 
 | Expression | Inputs |
 | --- | --- |
-| Workload read, its match, or a shared variable | Original workload as `object`, plus `variables` and `references` |
-| Write path expression or its match | The same inputs, plus `instance` and `index` |
+| Shared variable or instance ID expression | Original workload as `object`, plus `variables` and `references` |
+| Read expression, path expression, or match | The same inputs, plus `instance` and `index` |
 | Pod selector or grouping expression | One Pod as `object` only |
 | Reference lookup or selector | `object` is the workload passed to the SDK, such as a TrainJob. These expressions cannot use `variables` or `references`. |
 
-Callers select an instance by ID. The SDK finds its index in the ordered ID list.  
-For IDs `["gpu", "cpu"]`, selecting `"gpu"` gives `instance = "gpu"` and `index = 0`.  
-The ID list and component values have the same order. Without named instances, the inputs are `instance = ""` and `index = 0`.  
+A component with `instanceIds` has one instance for each returned ID.  
+The SDK evaluates each read, write and match once for each instance. Getters return the values keyed by ID.  
+For IDs `["gpu", "cpu"]`, the `"gpu"` instance has `instance = "gpu"` and `index = 0`.  
+A read that returns `resource.ErrValueNotFound` affects only its own instance. The other instances keep their values.  
+Without `instanceIds`, the component has one instance with `instance = ""` and `index = 0`.  
+If its Pod location is missing or its match is false, its reads return `resource.ErrValueNotFound`. The component is then absent, which is not an error.  
+Variables do not receive `instance` or `index`, so each variable is evaluated once for each workload.  
 Write expressions cannot read the caller's new value.
+
+The ID expression returns a list. An empty or duplicate ID fails the component with `resource.ErrInstanceMismatch`. An empty list means no instances.  
+The `karta` package from the Workload front door KEP returns the same sentinel, for example as an alias.  
+Each path is evaluated for its own ID, so the number of values always matches the number of IDs.  
+The SDK keeps the order of the list, and `index` is the position in it.  
+IDs from a list must map it without a filter or a sort, so `index` addresses the same entry in the workload.  
+Compilation enforces part of this rule. If a read, write or match of the component uses `index`, the SDK walks the parsed syntax tree of the ID expression.  
+It rejects a call to `sort`, `sortBy`, `reverse`, `slice` or `distinct`, and a `filter` or three-argument `map` macro.  
+The SDK cannot detect every reorder. For example, `a + b` shifts the positions of `b` without an error. The recorded e2e flow proves the order.  
+IDs from map keys must use `.sort()`, because CEL map keys have no fixed order.
 
 The SDK compiles each definition revision once and reuses the CEL programs.  
 Each evaluation has its own workload snapshot and reference inputs, and resolves only the variables it needs.  
-The evaluator supports cel-go optional values, strings and list extensions. An explicit null stays null; only a missing optional value takes its default.
+The evaluator supports cel-go optional values, strings and list extensions.
 
 CEL receives workload and reference data as plain maps, lists and values.  
+Before evaluation, the SDK removes map entries whose value is null from the workload, the references and each Pod.  
+List elements stay in place, so `index` still addresses the same entry. Writes apply to the original object.  
+`orValue` then replaces a null value as well as a missing value. This gives the jq `//` result for every catalog definition.  
 Results must have the expected type: a boolean for a match or a string for a write path.  
-SDK options set the CEL cost limit and evaluation timeout. Evaluation also respects context cancellation.  
+Instance IDs are strings: a list of strings from `instanceIds`, and one string from a Pod instance selector.  
+Authors convert other types with `string(x)`, so the workload and the Pod use the same text.  
+A scale value is a CEL integer, a double with no fraction, or a string that holds a base-10 integer. It must fit in int32.  
+The string form reads Knative annotations such as `autoscaling.knative.dev/min-scale: "2"` with a location `read`.  
+A scale write sends an integer, so a field that keeps scale in a string sets `read` only:
+
+```yaml
+minReplicas:
+  read:
+    path: /spec/template/metadata/annotations/autoscaling.knative.dev~1min-scale
+    default: 1
+```
+
+Each CEL evaluation has a cost limit of 1,000,000, the Kubernetes limit for one validation call, and a timeout of 1 second.  
+The timeout covers CEL only. Reference reads use the caller's context. Evaluation also respects context cancellation.  
+One SDK option changes both limits on the factories, `tree.Open`, `instructions.NewStructureSummary` and the Pod querier.  
+A limit that is exceeded is an error, never `resource.ErrValueNotFound`. The SDK has no result count limit and no cost estimate at load time.  
 Errors identify the component and field without including object contents.
 
 ## Writing a value
