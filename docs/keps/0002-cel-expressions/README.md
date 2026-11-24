@@ -546,6 +546,21 @@ It also checks fixed JSON Pointer syntax; the SDK checks computed pointers after
 Grouping chooses which Pods belong together.  
 Gang scheduling asks a consuming scheduler to admit a whole group together.
 
+`v1alpha2` keeps both grouping formats of `v1alpha1`:
+
+| Format | Gangs it makes | Change in `v1alpha2` |
+| --- | --- | --- |
+| `podGroups` | One gang for each set of Pods with equal grouping keys | `groupByKeyPaths` (jq) becomes `groupByExpressions` (CEL). The format is no longer deprecated. |
+| `podGroup` | One gang for the whole workload, with one SubGroup for each listed component and optional topology | None. It has no expressions. |
+
+`podGroup` cannot split one workload into several gangs. LeaderWorkerSet needs one gang for each replica group, so it uses `podGroups`.  
+All catalog definitions that declare grouping use `podGroups`.  
+As in `v1alpha1`, `podGroup` takes precedence when a definition sets both.
+
+`v1alpha2` removes the `filters` field from `podGroups` members. No catalog definition uses it.  
+A Pod joins the member that names its component. Without one, it joins the member that names its nearest parent component.  
+The SDK computes the minimum Pod count of a gang from the component scales, as in `v1alpha1`. The [implementation design](../../design/cel-expressions/README.md#scheduling-groups) describes the calculation.
+
 The [LeaderWorkerSet Karta from v0.3.0](https://github.com/dsx-ai-factory/workload-map/blob/bb13880e96e77087f074d6a04e5b6696762f6d3f/docs/catalog/leaderworkerset-x-k8s-io-leaderworkerset-v1.yaml#L76-L84) groups Pods by workload name and group index.  
 The scheduling structure stays the same.  
 The grouping expressions change from jq to CEL:
@@ -567,6 +582,9 @@ The grouping expressions change from jq to CEL:
 ```
 
 The SDK evaluates both expressions for each Pod, with that Pod as `object`.  
+Each grouping expression must return a non-empty string. A missing value, an empty string or another type is an error.  
+Use `string()` to convert a number, and `lowerAscii()` to make a key lowercase.  
+The SDK does not check name rules for keys. Each consumer checks the names that it builds from them.  
 For four Pods, the two label values produce these keys:
 
 | Pod | Workload name label | Group index label | Grouping key |
@@ -683,21 +701,85 @@ References are read-only, whether a reader fetches them or the caller supplies t
 Karta definitions move from `run.ai/v1alpha1` (jq) to `run.ai/v1alpha2` (CEL).  
 This is a breaking change for definitions and Go consumers. Existing jq definitions are not converted automatically.
 
-The CEL release will include CEL versions of every catalog definition.  
-To install the full catalog in the cluster, enable this chart option:
-
-```yaml
-catalogInstaller:
-  enabled: true
-```
-
-The option defaults to `false`.  
-The installer applies the definitions bundled with that chart release after the new CRD and webhook are ready. It rejects conflicts with custom definitions.
+The CEL release will include CEL versions of every catalog definition in `docs/catalog`.  
+The chart does not install catalog definitions, as in `v1alpha1`. Admins apply the files for the kinds that they use.  
+Apply only one definition for each kind. KAI-scheduler fails to group a kind that has two definitions with grouping.  
+A chart option that installs the catalog is outside this KEP.
 
 The [add-workload-type skill](../../../skills/add-workload-type/SKILL.md) will also support CEL.  
 Use it to create and validate CEL replacements for custom Karta definitions.
 
 Back up existing definitions before the coordinated CRD and SDK upgrade. Helm rollback alone cannot restore the old definitions.
+
+### Consumers outside this repository
+
+[KAI-scheduler](https://github.com/kai-scheduler/KAI-scheduler) reads Karta definitions from the cluster to build gangs.  
+It lists `run.ai/v1alpha1` objects through the Go module `github.com/run-ai/karta`.  
+If the cluster serves only `v1alpha2`, that list fails with a no-match error.  
+KAI then uses its default grouper, which needs only one Pod, so gang scheduling stops without an error.  
+Seven catalog kinds reach KAI only through Karta: KServe InferenceService, LLMInferenceService, Dynamo, Milvus, NIMService, Sandbox and Volcano Job.
+
+The releases and upgrades follow this order:
+
+1. A KAI release reads `v1alpha2`, and falls back to `v1alpha1` when the cluster does not serve `v1alpha2`.  
+   It logs a warning when a Karta CRD exists but serves neither version.
+2. The Karta release ships `v1alpha2`.
+3. Cluster admins upgrade KAI before they upgrade Karta.
+
+The fallback in step 1 also covers a cluster that still runs an older Karta.  
+KAI can import both SDK modules because their module paths differ.
+
+### CRD upgrade
+
+The CRD lists in `status.storedVersions` each version that objects in etcd can use. On a current cluster, this list holds `v1alpha1`.  
+The API server rejects a CRD update that removes a version from `spec.versions` while the version is still in that list.  
+Deleting the objects does not shrink the list. The status subresource must be patched.  
+A jq definition cannot be converted to CEL by a program, so `v1alpha1` objects are replaced, not migrated.
+
+The chart's pre-upgrade hook does these steps:
+
+1. If any `v1alpha1` Karta objects exist, the hook fails. Its message tells the admin to back up, convert and delete them.
+2. If none exist, the hook applies a CRD with `v1alpha2` served and stored, and `v1alpha1` with `served: false` and `storage: false`.
+3. The hook patches `status.storedVersions` to `["v1alpha2"]`.
+
+After the chart upgrade, admins apply the CEL definitions as in step 6 below.
+
+The hook RBAC adds `list` on `kartas` and `patch` on `customresourcedefinitions/status`, both limited to `kartas.run.ai`.  
+The next Karta release removes the `v1alpha1` entry from the CRD.
+
+Admins who install the CRD without the chart run the same steps after they upgrade KAI:
+
+1. Save the old definitions:
+
+   ```bash
+   kubectl get kartas.v1alpha1.run.ai -o yaml > kartas-v1alpha1.yaml
+   ```
+
+2. Convert the custom definitions with the add-workload-type skill.
+3. Delete the old definitions:
+
+   ```bash
+   kubectl delete kartas.v1alpha1.run.ai --all
+   ```
+
+4. Apply the new CRD:
+
+   ```bash
+   kubectl apply --server-side -f run.ai_kartas.yaml
+   ```
+
+5. Remove `v1alpha1` from the stored versions:
+
+   ```bash
+   kubectl patch crd kartas.run.ai --subresource=status --type=merge \
+     -p '{"status":{"storedVersions":["v1alpha2"]}}'
+   ```
+
+6. Apply the converted custom definitions and the catalog files from the CEL release:
+
+   ```bash
+   kubectl apply --server-side -f leaderworkerset-x-k8s-io-leaderworkerset-v1.yaml
+   ```
 
 ## Test plan
 
