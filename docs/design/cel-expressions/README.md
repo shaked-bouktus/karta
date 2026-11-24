@@ -220,6 +220,10 @@ The result is `predictor`. Pod selectors evaluate against the Pod as `object`.
 With the InferenceService factory from the read example, `instructions.InferPodComponentInstance(ctx, querier, component, factory)` returns its instance ID as a `*string`.  
 This predictor has one unnamed instance, so the result is nil.
 
+`querier.ExtractReplicaKey(ctx, selector.ReplicaSelector)` returns the replica that a Pod belongs to, such as the LWS group index.  
+Its expression must return a non-empty string, as a grouping expression must. A missing value, an empty string or another type is an error.  
+The SDK no longer converts other types to text with `fmt.Sprintf("%v")`.
+
 ## Scheduling groups
 
 The same Pod, component and summary identify its scheduling group and keys:
@@ -241,9 +245,34 @@ fmt.Println(group.PodGroupName, keys)
 ```
 
 For the KEP's KServe definition, the result is `service [model]`. A transformer Pod for the same InferenceService has the same group and key.  
+`GetPodGroupingEffectiveComponent` returns the member that names the Pod's component, or else its nearest parent. Members have no filters, so the SDK has no `PassesFilters`.  
 `ExtractGroupKeysFor` evaluates that member's CEL `groupByExpressions` against the Pod.  
+Each key must be a non-empty string. Otherwise the call returns an error that names the member and the expression index.  
 The application collects Pods with the same workload identity, group name and ordered keys. The consuming scheduler admits each group as a gang.  
 Pod collection, scheduler PodGroup resources and scheduling remain outside the SDK.
+
+A consuming scheduler gets the minimum Pod count of a gang from the SDK:
+
+```go
+minPods, err := instructions.CalculateSubtreeScale(
+    ctx, group.EffectiveComponent, instanceID, factory, summary)
+```
+
+`instanceID` is a `*string`. Nil counts all instances of the component.  
+For each component, the function reads `minReplicas`, or `replicas` when `minReplicas` is missing or zero.  
+With an instance ID, the subtree root counts only that instance. Without one, it adds the counts of all instances.  
+A parent returns its own count multiplied by the sum of its children's counts.  
+A count of zero means that another level sets the scale, so the nonzero level's count passes through.  
+If no component in the definition has a scale, the function counts the leaf components, one for each instance.  
+`v1alpha2` keeps this arithmetic. Only the scale reads change from jq to CEL.
+
+The count covers the whole component subtree, not one gang that group keys make.  
+For the LeaderWorkerSet catalog definition with two groups of three Pods, `group` returns 18.  
+This is a known limitation of the current SDK. A fix changes the gang sizes that schedulers use, so it is outside this design.
+
+The function reads scales through the factory, so the reference rules apply.  
+References are off unless the factory has a reference source. A scheduler without RBAC for the referenced kinds passes none.  
+A scale read that needs a reference then fails, unless its expression has a fallback such as `"trainingRuntime" in references ? ... : 1`.
 
 ## References
 
