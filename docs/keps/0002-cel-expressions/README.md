@@ -12,7 +12,8 @@
 ## Summary
 
 Replace jq with [CEL](https://kubernetes.io/docs/reference/using-api/cel/) in Karta definitions.  
-Separate read expressions from write locations, with an optional match expression on each.  
+Separate reads from write locations, with an optional match expression on each.  
+A read uses a location or a CEL expression. A field that reads and writes one location states it once.  
 Read named references through a Kubernetes reader or objects supplied by the caller.  
 The SDK changes the workload locally; the caller saves it to Kubernetes.
 
@@ -183,7 +184,7 @@ spec:
       statusDefinition:
         conditionsDefinition:
           read:
-            expression: object.?status.?conditions.orValue(null)
+            path: /status/conditions
           typeFieldName: type
           statusFieldName: status
           messageFieldName: message
@@ -214,35 +215,17 @@ spec:
         specDefinition:
           fragmentedPodSpecDefinition:
             schedulerName:
-              read:
-                expression: object.?spec.?predictor.?schedulerName.orValue(null)
-              write:
-                path: /spec/predictor/schedulerName
+              path: /spec/predictor/schedulerName
             labels:
-              read:
-                expression: object.?spec.?predictor.?labels.orValue(null)
-              write:
-                path: /spec/predictor/labels
+              path: /spec/predictor/labels
             annotations:
-              read:
-                expression: object.?spec.?predictor.?annotations.orValue(null)
-              write:
-                path: /spec/predictor/annotations
+              path: /spec/predictor/annotations
             podAffinity:
-              read:
-                expression: object.?spec.?predictor.?affinity.?podAffinity.orValue(null)
-              write:
-                path: /spec/predictor/affinity/podAffinity
+              path: /spec/predictor/affinity/podAffinity
             nodeAffinity:
-              read:
-                expression: object.?spec.?predictor.?affinity.?nodeAffinity.orValue(null)
-              write:
-                path: /spec/predictor/affinity/nodeAffinity
+              path: /spec/predictor/affinity/nodeAffinity
             containers:
-              read:
-                expression: object.?spec.?predictor.?containers.orValue(null)
-              write:
-                path: /spec/predictor/containers
+              path: /spec/predictor/containers
             container:
               read:
                 matchExpression: variables.containerKeys.size() > 0
@@ -256,25 +239,16 @@ spec:
                   "/spec/predictor/" +
                   variables.containerKeys[0].replace("~", "~0").replace("/", "~1")
             priorityClassName:
-              read:
-                expression: object.?spec.?predictor.?priorityClassName.orValue(null)
-              write:
-                path: /spec/predictor/priorityClassName
+              path: /spec/predictor/priorityClassName
         scaleDefinition:
           minReplicas:
-            read:
-              expression: object.?spec.?predictor.?minReplicas.orValue(null)
-            write:
-              path: /spec/predictor/minReplicas
+            path: /spec/predictor/minReplicas
           maxReplicas:
-            read:
-              expression: object.?spec.?predictor.?maxReplicas.orValue(null)
-            write:
-              path: /spec/predictor/maxReplicas
+            path: /spec/predictor/maxReplicas
         podSelector:
           componentTypeSelector:
             read:
-              expression: object.?metadata.?labels[?"component"].orValue(null)
+              path: /metadata/labels/component
             value: predictor
       - name: transformer
         kind:
@@ -284,30 +258,18 @@ spec:
         ownerRef: inferenceservice
         specDefinition:
           podSpec:
-            read:
-              expression: object.?spec.?transformer.orValue(null)
-            write:
-              path: /spec/transformer
+            path: /spec/transformer
           metadata:
-            read:
-              expression: object.?spec.?transformer.orValue(null)
-            write:
-              path: /spec/transformer
+            path: /spec/transformer
         scaleDefinition:
           minReplicas:
-            read:
-              expression: object.?spec.?transformer.?minReplicas.orValue(null)
-            write:
-              path: /spec/transformer/minReplicas
+            path: /spec/transformer/minReplicas
           maxReplicas:
-            read:
-              expression: object.?spec.?transformer.?maxReplicas.orValue(null)
-            write:
-              path: /spec/transformer/maxReplicas
+            path: /spec/transformer/maxReplicas
         podSelector:
           componentTypeSelector:
             read:
-              expression: object.?metadata.?labels[?"component"].orValue(null)
+              path: /metadata/labels/component
             value: transformer
   optimizationInstructions:
     gangScheduling:
@@ -326,27 +288,101 @@ spec:
 
 ### CRD rules
 
-A field has `read`, `write`, or both. `read.expression` returns its value.  
-`write` has exactly one of `path` or `pathExpression`.  
+A location names one place in the object. It has exactly one of `path` or `pathExpression`, and an optional `matchExpression`.  
 A fixed path is a JSON Pointer ([RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)) such as `/spec/predictor/schedulerName`; a path expression returns one.  
-`path: ""` selects the workload root, as needed for a standalone Pod's `podTemplateSpec`.  
+`path: ""` selects the workload root, as needed for a standalone Pod's `podTemplateSpec`.
+
+A field sets a shared location, or it sets `read`, `write`, or both. It never sets a shared location together with `read` or `write`.  
+`write` is a location. `read` is a location, or an `expression` that computes the value.  
+A shared location is the short form of the same location in both `read` and `write`.  
+These two fields have the same meaning:
+
+```yaml
+schedulerName:
+  path: /spec/predictor/schedulerName
+---
+schedulerName:
+  read:
+    path: /spec/predictor/schedulerName
+  write:
+    path: /spec/predictor/schedulerName
+```
+
+With the short form, a read after a write returns the written value.  
 Without `write`, the SDK rejects mutation requests for that field.  
 Omit it for fields that are immutable or should only be read.
+
+A location read returns the value at that location. A fixed path uses no CEL and never fetches references.  
+A missing segment or list index returns `ErrValueNotFound`. A segment through a scalar is an error.  
+A null value, at the end of the path or in the middle, also returns `ErrValueNotFound`.  
+A read expression that returns null or an empty optional returns `ErrValueNotFound`. An optional with a value returns that value.
+
+Before CEL sees the workload, references or a Pod, the SDK removes map entries whose value is null. List elements stay in place.  
+A null field is therefore the same as a missing field in every expression.  
+A jq default `X // D` becomes `X.orValue(D)`, with `.?` before each optional segment.  
+For example, `.spec.replicas // 1` becomes `object.?spec.?replicas.orValue(1)`.  
+jq `//` also replaces false. A boolean field with a default other than false needs an explicit check.
+
+A shared location or a location read can set `default`. The SDK returns it when the value is missing or null.  
+A false match still returns `ErrValueNotFound`, because the field does not apply to that workload.  
+A write and an expression read cannot set `default`. An expression uses `orValue` instead.  
+The SDK converts the default to the field type when it loads the definition, so a wrong type fails validation.
+
+```yaml
+replicas:
+  path: /spec/replicas
+  default: 1
+```
+
+A component with `instanceIds` has one instance for each ID that `instanceIds.read.expression` returns.  
+The SDK evaluates each read, write and match once for each instance.  
+`instance` holds the ID, and `index` holds its position in the ID list.  
+A missing value affects only its own instance. An empty or duplicate ID fails the component with `ErrInstanceMismatch`.  
+A fixed path names the same place for every instance, so such a component cannot use one.  
+This Dynamo component maps one entry of `spec.components` to each instance:
+
+```yaml
+instanceIds:
+  read:
+    expression: object.spec.components.map(c, c.name)
+specDefinition:
+  fragmentedPodSpecDefinition:
+    schedulerName:
+      pathExpression: '"/spec/components/" + string(index) + "/podTemplate/spec/schedulerName"'
+```
+
+Instances keep the order of the ID list.  
+IDs from a list must map it without a filter or a sort, so `index` addresses the same entry.  
+If a path of the component uses `index`, an ID expression that calls `sort`, `sortBy`, `reverse`, `slice`, `distinct`, `filter` or the three-argument `map` fails validation.  
+This check does not catch every reorder. For example, joining two lists with `+` shifts the positions without an error.  
+The recorded e2e flow of each catalog definition proves its order.  
+IDs from map keys must use `.sort()`, because CEL map keys have no fixed order. Paths into a map use `instance` as the key.
+
+The SDK evaluates each path for its own ID, so a path cannot return more or fewer values than there are IDs.  
+This answers open decision 4 of the [Workload front door KEP](https://github.com/dsx-ai-factory/workload-map/pull/687). That decision asks for one traversal that derives IDs and template paths together.
+
+A component without `instanceIds` has one instance, with `instance` set to `""` and `index` set to 0.  
+If its Pod location is missing or its match is false, its reads return `ErrValueNotFound`. The component is then absent, which is not an error.
 
 Each side evaluates its own `matchExpression` first. Omission means true.  
 A false read match skips the read expression and returns `ErrValueNotFound` for that field. Whole-workload reads skip fields with this error.  
 A false write match returns an error before changing anything.  
 A match must return a boolean; errors never mean false.  
+An instance ID is a string. The ID expression returns a list of strings, and a Pod instance ID expression returns one string.  
+A scale value is an integer, a double with no fraction, or a string that holds a base-10 integer. It must fit in int32.  
+A scale write sends an integer, so a scale kept in a string, such as a Knative annotation, is read-only.  
+Any other result type is an error that names the component and field.  
+Each evaluation has a default cost limit of 1,000,000 and a timeout of 1 second. Exceeding either is an error.  
 CEL conditional expressions handle alternative reads or locations.
 
 | Current API | Proposed API |
 | --- | --- |
-| `containerPath`, `podSpecPath`, `replicasPath`, other value paths | `container`, `podSpec`, `replicas`, each with `read`, `write`, or both |
-| `instanceIdPath` | `instanceIds.read.expression`; read-only |
+| `containerPath`, `podSpecPath`, `replicasPath`, other value paths | `container`, `podSpec`, `replicas`, each with a shared location, or `read`, `write`, or both |
+| `instanceIdPath` | `instanceIds.read.expression`, which returns the ID list; read-only |
 | Condition `path` and selector `keyPath`/`idPath` | `read.expression` inside the same definition or selector |
 | `groupByKeyPaths` | `groupByExpressions`; evaluated separately for each Pod |
 | Status matcher `byExpression.expression` | CEL boolean: `true` matches the status; remove `expectedResult` |
-| Suspend/resume action `path` and JSON `value` | Action `write` location and the same JSON `value` |
+| Suspend/resume action `path` and JSON `value` | Root component action `write` location and the same JSON `value`. The value replaces what is at the location, and `null` removes the key |
 | No shared expressions | `spec.variables[{name, expression}]` |
 | No external inputs | `spec.structureDefinition.references` |
 
@@ -427,21 +463,60 @@ spec:
                       required: [name]
                       properties:
                         name: {type: string, minLength: 1}
+                        instanceIds:
+                          type: object
+                          required: [read]
+                          properties:
+                            read:
+                              type: object
+                              required: [expression]
+                              properties:
+                                expression: {type: string, minLength: 1}
                         specDefinition:
                           type: object
                           properties:
                             podTemplateSpec:
                               type: object
                               x-kubernetes-validations:
-                                - rule: has(self.read) || has(self.write)
-                                  message: Set read, write, or both.
+                                - rule: >-
+                                    (has(self.path) || has(self.pathExpression)) !=
+                                    (has(self.read) || has(self.write))
+                                  message: Set a shared location, or read, write, or both.
+                                - rule: "!(has(self.path) && has(self.pathExpression))"
+                                  message: Set at most one of path or pathExpression.
+                                - rule: >-
+                                    !has(self.matchExpression) ||
+                                    has(self.path) || has(self.pathExpression)
+                                  message: A shared matchExpression needs a shared path or pathExpression.
+                                - rule: >-
+                                    !has(self.default) ||
+                                    has(self.path) || has(self.pathExpression)
+                                  message: A shared default needs a shared path or pathExpression.
                               properties:
+                                matchExpression: {type: string, minLength: 1}
+                                path:
+                                  type: string
+                                  description: JSON Pointer; an empty string selects the root.
+                                pathExpression: {type: string, minLength: 1}
+                                default:
+                                  x-kubernetes-preserve-unknown-fields: true
+                                  description: Read result for a missing or null value.
                                 read:
                                   type: object
-                                  required: [expression]
+                                  x-kubernetes-validations:
+                                    - rule: >-
+                                        [has(self.path), has(self.pathExpression),
+                                        has(self.expression)].filter(x, x).size() == 1
+                                      message: Set exactly one of path, pathExpression, or expression.
+                                    - rule: "!has(self.default) || !has(self.expression)"
+                                      message: An expression read cannot set default; use orValue.
                                   properties:
                                     matchExpression: {type: string, minLength: 1}
+                                    path: {type: string}
+                                    pathExpression: {type: string, minLength: 1}
                                     expression: {type: string, minLength: 1}
+                                    default:
+                                      x-kubernetes-preserve-unknown-fields: true
                                 write:
                                   type: object
                                   x-kubernetes-validations:
@@ -455,11 +530,14 @@ spec:
                                     pathExpression: {type: string, minLength: 1}
 ```
 
-Read and write have separate optional match expressions.  
-An omitted match means true; `path: ""` remains a valid write location.  
+A shared location, a read and a write each have an optional match expression.  
+An omitted match means true; `path: ""` remains a valid location.  
+`default` holds any JSON value. The SDK checks its type against the field when it loads the definition.  
 Reference lists use `matchLabels` and `matchExpressions`, with literal `value` or CEL `expression` entries. Their full schema is not shown here.  
-The webhook and local loader compile expressions, check their available inputs, and reject variable dependency cycles.  
-They also check fixed JSON Pointer syntax; the SDK checks computed pointers after evaluation.
+Most Karta users run the SDK without the Karta operator, so the schema rules are not the main check.  
+The SDK checks every definition when it loads it, and the webhook runs the same check.  
+The check compiles expressions, checks their available inputs, and rejects variable dependency cycles.  
+It also checks fixed JSON Pointer syntax; the SDK checks computed pointers after evaluation.
 
 </details>
 
@@ -467,6 +545,21 @@ They also check fixed JSON Pointer syntax; the SDK checks computed pointers afte
 
 Grouping chooses which Pods belong together.  
 Gang scheduling asks a consuming scheduler to admit a whole group together.
+
+`v1alpha2` keeps both grouping formats of `v1alpha1`:
+
+| Format | Gangs it makes | Change in `v1alpha2` |
+| --- | --- | --- |
+| `podGroups` | One gang for each set of Pods with equal grouping keys | `groupByKeyPaths` (jq) becomes `groupByExpressions` (CEL). The format is no longer deprecated. |
+| `podGroup` | One gang for the whole workload, with one SubGroup for each listed component and optional topology | None. It has no expressions. |
+
+`podGroup` cannot split one workload into several gangs. LeaderWorkerSet needs one gang for each replica group, so it uses `podGroups`.  
+All catalog definitions that declare grouping use `podGroups`.  
+As in `v1alpha1`, `podGroup` takes precedence when a definition sets both.
+
+`v1alpha2` removes the `filters` field from `podGroups` members. No catalog definition uses it.  
+A Pod joins the member that names its component. Without one, it joins the member that names its nearest parent component.  
+The SDK computes the minimum Pod count of a gang from the component scales, as in `v1alpha1`. The [implementation design](../../design/cel-expressions/README.md#scheduling-groups) describes the calculation.
 
 The [LeaderWorkerSet Karta from v0.3.0](https://github.com/dsx-ai-factory/workload-map/blob/bb13880e96e77087f074d6a04e5b6696762f6d3f/docs/catalog/leaderworkerset-x-k8s-io-leaderworkerset-v1.yaml#L76-L84) groups Pods by workload name and group index.  
 The scheduling structure stays the same.  
@@ -489,6 +582,9 @@ The grouping expressions change from jq to CEL:
 ```
 
 The SDK evaluates both expressions for each Pod, with that Pod as `object`.  
+Each grouping expression must return a non-empty string. A missing value, an empty string or another type is an error.  
+Use `string()` to convert a number, and `lowerAscii()` to make a key lowercase.  
+The SDK does not check name rules for keys. Each consumer checks the names that it builds from them.  
 For four Pods, the two label values produce these keys:
 
 | Pod | Workload name label | Group index label | Grouping key |
@@ -605,21 +701,85 @@ References are read-only, whether a reader fetches them or the caller supplies t
 Karta definitions move from `run.ai/v1alpha1` (jq) to `run.ai/v1alpha2` (CEL).  
 This is a breaking change for definitions and Go consumers. Existing jq definitions are not converted automatically.
 
-The CEL release will include CEL versions of every catalog definition.  
-To install the full catalog in the cluster, enable this chart option:
-
-```yaml
-catalogInstaller:
-  enabled: true
-```
-
-The option defaults to `false`.  
-The installer applies the definitions bundled with that chart release after the new CRD and webhook are ready. It rejects conflicts with custom definitions.
+The CEL release will include CEL versions of every catalog definition in `docs/catalog`.  
+The chart does not install catalog definitions, as in `v1alpha1`. Admins apply the files for the kinds that they use.  
+Apply only one definition for each kind. KAI-scheduler fails to group a kind that has two definitions with grouping.  
+A chart option that installs the catalog is outside this KEP.
 
 The [add-workload-type skill](../../../skills/add-workload-type/SKILL.md) will also support CEL.  
 Use it to create and validate CEL replacements for custom Karta definitions.
 
 Back up existing definitions before the coordinated CRD and SDK upgrade. Helm rollback alone cannot restore the old definitions.
+
+### Consumers outside this repository
+
+[KAI-scheduler](https://github.com/kai-scheduler/KAI-scheduler) reads Karta definitions from the cluster to build gangs.  
+It lists `run.ai/v1alpha1` objects through the Go module `github.com/run-ai/karta`.  
+If the cluster serves only `v1alpha2`, that list fails with a no-match error.  
+KAI then uses its default grouper, which needs only one Pod, so gang scheduling stops without an error.  
+Seven catalog kinds reach KAI only through Karta: KServe InferenceService, LLMInferenceService, Dynamo, Milvus, NIMService, Sandbox and Volcano Job.
+
+The releases and upgrades follow this order:
+
+1. A KAI release reads `v1alpha2`, and falls back to `v1alpha1` when the cluster does not serve `v1alpha2`.  
+   It logs a warning when a Karta CRD exists but serves neither version.
+2. The Karta release ships `v1alpha2`.
+3. Cluster admins upgrade KAI before they upgrade Karta.
+
+The fallback in step 1 also covers a cluster that still runs an older Karta.  
+KAI can import both SDK modules because their module paths differ.
+
+### CRD upgrade
+
+The CRD lists in `status.storedVersions` each version that objects in etcd can use. On a current cluster, this list holds `v1alpha1`.  
+The API server rejects a CRD update that removes a version from `spec.versions` while the version is still in that list.  
+Deleting the objects does not shrink the list. The status subresource must be patched.  
+A jq definition cannot be converted to CEL by a program, so `v1alpha1` objects are replaced, not migrated.
+
+The chart's pre-upgrade hook does these steps:
+
+1. If any `v1alpha1` Karta objects exist, the hook fails. Its message tells the admin to back up, convert and delete them.
+2. If none exist, the hook applies a CRD with `v1alpha2` served and stored, and `v1alpha1` with `served: false` and `storage: false`.
+3. The hook patches `status.storedVersions` to `["v1alpha2"]`.
+
+After the chart upgrade, admins apply the CEL definitions as in step 6 below.
+
+The hook RBAC adds `list` on `kartas` and `patch` on `customresourcedefinitions/status`, both limited to `kartas.run.ai`.  
+The next Karta release removes the `v1alpha1` entry from the CRD.
+
+Admins who install the CRD without the chart run the same steps after they upgrade KAI:
+
+1. Save the old definitions:
+
+   ```bash
+   kubectl get kartas.v1alpha1.run.ai -o yaml > kartas-v1alpha1.yaml
+   ```
+
+2. Convert the custom definitions with the add-workload-type skill.
+3. Delete the old definitions:
+
+   ```bash
+   kubectl delete kartas.v1alpha1.run.ai --all
+   ```
+
+4. Apply the new CRD:
+
+   ```bash
+   kubectl apply --server-side -f run.ai_kartas.yaml
+   ```
+
+5. Remove `v1alpha1` from the stored versions:
+
+   ```bash
+   kubectl patch crd kartas.run.ai --subresource=status --type=merge \
+     -p '{"status":{"storedVersions":["v1alpha2"]}}'
+   ```
+
+6. Apply the converted custom definitions and the catalog files from the CEL release:
+
+   ```bash
+   kubectl apply --server-side -f leaderworkerset-x-k8s-io-leaderworkerset-v1.yaml
+   ```
 
 ## Test plan
 
@@ -643,6 +803,14 @@ Keep one SDK format initially: [JSON Merge Patch](https://www.rfc-editor.org/rfc
 It covers the model image, labels, resources and scalar values in these examples.  
 Null inside a map patch deletes a key; arrays replace in full.  
 JSON Patch can be added for a demonstrated need to store literal null or edit a list by position.  
+A write names a field of the definition, and the definition gives the path in the workload.  
+The SDK also returns the raw value at a write location, so a caller can change a full array without losing operator-specific fields.  
+Suspend and resume actions do not merge. Each action sets its value exactly, and a null value removes the key.
+
+A typed pod-template callback is an alternative interface. The caller edits a `corev1.PodTemplateSpec`, and the SDK routes each change to a mapped field.  
+It hides which fields a definition maps, but it cannot write scale values or other fields outside the pod template.  
+Go types also drop fields they do not know, so a changed list can lose operator-specific fields.  
+Such a helper can run on top of the raw read and the merge patch write, in a separate proposal.  
 Keeping jq alongside CEL would require maintaining and testing both expression contracts.
 
 ## History
