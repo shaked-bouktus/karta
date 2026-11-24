@@ -14,6 +14,8 @@ Karta definitions use `*kartav1alpha2.Karta`; decoded workloads use `*unstructur
 
 Most Karta users run the SDK without the Karta operator, so the SDK checks every definition itself.  
 Each SDK entry point compiles the definition before it uses it: `resource.NewComponentFactory`, `resource.NewComponentFactoryFromObject`, `instructions.NewStructureSummary` and `tree.Open`.  
+`resource.NewAccessor` and the CEL runner are internal. `NewComponentFactoryFromObject` builds a factory from an object.  
+`NewComponentFactory` takes a `ComponentAccessor`, for example a mock in tests.  
 Compilation validates the definition, expands each shared location into `read` and `write`, and compiles the CEL programs.  
 After compilation, SDK code sees only `read` and `write`. The operator's validating webhook runs the same check on create and update.  
 The validator is also available to SDK callers:
